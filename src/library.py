@@ -17,6 +17,7 @@ autore, quindi devono essere parole sue.
 import hashlib
 import json
 import re
+import unicodedata
 from array import array
 from collections import Counter
 from pathlib import Path
@@ -529,13 +530,20 @@ def _manifest(folder: Path) -> dict[str, dict]:
     path = folder / MANIFEST_NAME
     if not path.exists():
         return {}
-    return {item["file"]: item for item in json.loads(path.read_text(encoding="utf-8"))}
+    return {_name_key(item["file"]): item for item in json.loads(path.read_text(encoding="utf-8"))}
+
+
+def _name_key(name: str) -> str:
+    """Nome di file confrontabile: le lettere accentate possono arrivare in
+    due forme diverse (una sola lettera, oppure lettera + accento) a seconda
+    del sistema e di come il file e' stato copiato."""
+    return unicodedata.normalize("NFC", name).strip().casefold()
 
 
 def metadata_for(path: Path, manifest: dict[str, dict]) -> dict:
     """Titolo, autore e opzioni di un file: da fonti.json, altrimenti dal
     nome del file nella forma "Autore - Titolo"."""
-    declared = manifest.get(path.name)
+    declared = manifest.get(_name_key(path.name))
     if declared:
         return {**declared, "author": declared.get("author") or UNKNOWN_AUTHOR}
     author, separator, title = path.stem.partition(" - ")
