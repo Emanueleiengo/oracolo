@@ -200,6 +200,30 @@ h1 span { color: #dbab72; margin: 0 3px; }
 button.detail-trail-step:hover { background: rgba(95,224,255,.2); border-color: rgba(95,224,255,.7); color: #fff; }
 .detail-trail-step.is-current { border-color: rgba(255,255,255,.5); background: rgba(255,255,255,.14); color: #fff; cursor: default; }
 
+/* L'Oracolo nella scheda: la domanda (del visitatore o sua) e la risposta. */
+.detail-oracle { margin-top: 20px; padding: 16px 16px 14px; border: 1px solid rgba(255,213,138,.3); border-radius: 10px; background: linear-gradient(150deg, rgba(255,213,138,.1), rgba(255,213,138,.02) 60%); }
+.detail-oracle-heading { display: flex; align-items: center; gap: 6px; font: 8px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .14em; color: #e1b47f; margin: 0 0 12px; }
+.detail-oracle-label { font: 8px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .1em; color: #a39b93; margin: 0 0 5px; }
+.detail-oracle-question { font: italic 500 17px/1.4 'Playfair Display', serif; color: #f4ead9; margin: 0; }
+.detail-oracle-question.is-visitor { font: 500 13px/1.5 'Manrope', sans-serif; color: #d6cec4; }
+.detail-oracle-answer { font: italic 500 17px/1.4 'Playfair Display', serif; color: #ffd58a; margin: 14px 0 0; padding-top: 13px; border-top: 1px solid rgba(255,213,138,.22); animation: fadeIn .6s ease; }
+.detail-oracle-waiting { font: italic 500 13px/1.5 'Playfair Display', serif; color: #a39b93; margin: 10px 0 0; animation: oracleBreath 1.8s ease-in-out infinite; }
+.detail-oracle-question + .detail-oracle-waiting, .detail-oracle-label + .detail-oracle-waiting { margin-top: 10px; }
+.detail-oracle-sources { margin-top: 14px; }
+.detail-oracle-sources p:not(.detail-oracle-label) { color: #b9b1a8; font-size: 11px; line-height: 1.5; font-style: italic; margin: 0 0 4px; padding-left: 10px; border-left: 1px solid rgba(255,213,138,.3); }
+.detail-oracle-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.detail-oracle-actions button { font: 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .08em; padding: 8px 12px; border-radius: 999px; border: 1px solid rgba(255,213,138,.45); background: transparent; color: #f0d9b0; cursor: pointer; transition: background .2s, color .2s, opacity .2s; }
+.detail-oracle-actions button:hover:not(:disabled) { background: rgba(255,213,138,.16); color: #fff; }
+.detail-oracle-actions button:disabled { opacity: .45; cursor: default; }
+@keyframes oracleBreath { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+
+/* Barra delle domande: invita finche' non la si usa, e mostra l'attesa. */
+.oracle-input-wrap.is-inviting { animation: oracleInvite 2.6s ease-in-out infinite; }
+@keyframes oracleInvite { 0%, 100% { box-shadow: 0 0 0 5px rgba(217,174,125,.03), 0 15px 50px rgba(0,0,0,.35); } 50% { box-shadow: 0 0 0 7px rgba(217,174,125,.12), 0 0 34px rgba(255,213,138,.22), 0 15px 50px rgba(0,0,0,.35); } }
+.oracle-input-wrap.is-asking input { color: transparent; }
+.oracle-asking { position: absolute; left: 58px; right: 20px; font: italic 500 14px 'Playfair Display', serif; color: #e1b47f; pointer-events: none; animation: oracleBreath 1.8s ease-in-out infinite; }
+.search-ask .search-result-label { color: #f0d9b0; font-style: italic; }
+
 /* Tag collegati, ognuno con la frase che lo unisce al tag aperto. */
 .detail-bond-list { display: flex; flex-direction: column; gap: 8px; }
 .detail-bond { display: flex; flex-direction: column; gap: 6px; width: 100%; padding: 11px 12px; text-align: left; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: rgba(255,255,255,.04); color: inherit; cursor: pointer; transition: background .2s, border-color .2s; }

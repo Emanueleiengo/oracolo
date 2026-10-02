@@ -8,33 +8,28 @@ from src.logging_utils import get_logger
 
 log = get_logger(__name__)
 
-QUESTIONS_PROMPT = """Sei l'Oracolo. Di seguito trovi dei temi (tag) e alcuni \
-pensieri anonimi delle persone che li hanno ispirati.
+QUESTIONS_PROMPT = """Sei l'Oracolo di una nebulosa fatta dei pensieri anonimi di tante persone.
 
 Temi ricorrenti: {tags}
 
-Alcuni pensieri:
+Alcuni pensieri (ti servono solo per capire i temi: non parlare a nome di \
+chi li ha scritti):
 {samples}
 
-Scrivi esattamente {count} domande, in italiano, evocative e introspettive, \
-diverse tra loro, che invitino chi le legge a riflettere su questi temi. \
-Non fare riferimento esplicito ai tag o ai pensieri riportati sopra: ogni \
-domanda deve reggersi da sola.
+Scrivi esattamente {count} domande da fare a chi ti visita, sulla SUA vita. Regole:
+- in italiano, al massimo 14 parole ciascuna, una sola frase che finisce con il punto di domanda;
+- parla solo del visitatore, dandogli del tu: mai "io", "mio", "mia", "mi", "noi", "nostro";
+- ogni domanda parte da qualcosa di concreto (un oggetto, un luogo, un gesto, una persona), non da un concetto;
+- ogni domanda tocca un tema diverso e inizia con una parola diversa;
+- non iniziare con "Ricordi", "Cosa significa" o "Come puoi".
+
+Esempi del tono (non copiarli):
+- Di chi e' la voce che senti quando la casa e' vuota?
+- Da quanto tempo non apri quel cassetto?
+- Chi ti aspettava alla fermata, quel giorno?
+
 Rispondi SOLO con un oggetto JSON con questa forma esatta, senza altro testo:
 {{"questions": ["...", "..."]}}
-"""
-
-ANSWER_PROMPT = """Sei l'Oracolo: non dai risposte logiche, dirette o utili. \
-Parli per enigmi, immagini, simboli e paradossi, come una sibilla. Non \
-spiegare, non consigliare, non essere coerente in modo razionale: evoca, \
-allude, lascia interpretare. Mai una frase che suoni come un consiglio pratico.
-
-Rispondi in italiano alla domanda seguente con UNA SOLA affermazione, breve \
-e secca (una frase sola, non una domanda, non un elenco, senza "ma" o "e" \
-che la spezzino in piu' pensieri). Rispondi solo con il testo dell'affermazione, \
-senza virgolette, senza premesse tipo "L'oracolo dice".
-
-Domanda: "{question}"
 """
 
 FALLBACK_QUESTION = "L'oracolo tace, per ora."
@@ -106,19 +101,3 @@ def generate_questions(count: int | None = None) -> list[str]:
     if not questions:
         log.warning("Nessuna domanda ottenuta da Ollama")
     return questions
-
-
-def answer_question(question: str) -> str:
-    """Chiede a Ollama una risposta criptica, in una sola affermazione."""
-    response = requests.post(
-        f"{config.OLLAMA_HOST}/api/generate",
-        json={
-            "model": config.OLLAMA_TAG_MODEL,
-            "prompt": ANSWER_PROMPT.format(question=question),
-            "stream": False,
-            "options": {"temperature": 1.3},
-        },
-        timeout=config.OLLAMA_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
-    return response.json()["response"].strip()

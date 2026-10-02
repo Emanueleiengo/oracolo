@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph3D from 'react-force-graph-3d';
-import { CircleHelp, Search, Sparkles, X } from 'lucide-react';
-import { fetchGraph, fetchTagDetail, type TagDetail, type TagGraph } from '@/lib/api';
-import TagDetailPanel from '@/components/TagDetailPanel';
+import { CircleHelp, Sparkles, X } from 'lucide-react';
+import {
+  askOracle,
+  fetchGraph,
+  fetchOracleAnswer,
+  fetchOracleQuestion,
+  fetchTagDetail,
+  type TagDetail,
+  type TagGraph,
+} from '@/lib/api';
+import TagDetailPanel, { type OracleState } from '@/components/TagDetailPanel';
 import { SHAPE_KEYS, getConstellation, type Anchor, type Constellation, type ShapeId } from './constellation';
 import miaIcona from './mistakelogo.png';
 
@@ -166,6 +174,12 @@ export default function App() {
   const [showIntro, setShowIntro] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResultsVisible, setSearchResultsVisible] = useState(false);
+  // La barra in basso invita a fare una domanda finche' non la si usa.
+  const [inviting, setInviting] = useState(true);
+  // Cosa dice l'Oracolo nella scheda della stella aperta (vedi OracleState).
+  const [oracle, setOracle] = useState<OracleState | null>(null);
+  // Vero mentre l'Oracolo cerca la stella per una domanda del visitatore.
+  const [asking, setAsking] = useState(false);
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
   const [detailTag, setDetailTag] = useState<TagDetail | null>(null);
@@ -189,6 +203,10 @@ export default function App() {
   const selectionRef = useRef<string | null>(null);
   // Se le stelle sono (o erano fino a un attimo fa) organizzate in una figura.
   const shapeWasActive = useRef(false);
+  // Domande gia' fatte dall'Oracolo, per stella: riaprendola si ritrova la stessa.
+  const oracleQuestions = useRef(new Map<string, string>());
+  // Tappe del viaggio, leggibili anche da dentro le richieste in corso.
+  const trailRef = useRef<string[]>([]);
 
   // ── Load the tag graph from Oracolo ──
   const loadGraph = useCallback(async () => {
@@ -548,10 +566,75 @@ export default function App() {
     selectTag(node.id);
   };
 
+  // ── L'Oracolo ──
+  useEffect(() => {
+    trailRef.current = trail;
+  }, [trail]);
+
+  // L'Oracolo fa una domanda a chi si e' fermato su una stella. Con `fresh`
+  // ne formula una nuova anche se per quella stella ne aveva gia' fatta una.
+  const loadOracleQuestion = useCallback(async (tag: string, fresh: boolean) => {
+    const known = fresh ? undefined : oracleQuestions.current.get(tag);
+    setOracle({ tag, asker: 'oracle', question: known ?? null, answer: null, answering: false, entries: [], silent: false });
+    if (known) return;
+    const stillHere = (current: OracleState | null) => current?.tag === tag && current.asker === 'oracle';
+    try {
+      const question = await fetchOracleQuestion(tag, trailRef.current);
+      oracleQuestions.current.set(tag, question);
+      setOracle((current) => (stillHere(current) ? { ...current!, question } : current));
+    } catch {
+      // Senza Oracolo (Ollama spento, export statico) il riquadro non compare.
+      setOracle((current) => (stillHere(current) ? { ...current!, silent: true } : current));
+    }
+  }, []);
+
+  // Aprendo una stella senza esserci arrivati con una domanda, e' l'Oracolo
+  // a farne una.
+  useEffect(() => {
+    if (!selectedId || oracle?.tag === selectedId) return;
+    loadOracleQuestion(selectedId, false);
+  }, [selectedId, oracle, loadOracleQuestion]);
+
+  // Il visitatore scrive una domanda: l'Oracolo lo indirizza alla stella che
+  // raccoglie i pensieri piu' vicini e gli risponde. Da li' parte il viaggio.
+  const askTheOracle = useCallback(async (text: string) => {
+    const question = text.trim();
+    if (!question || asking) return;
+    setAsking(true);
+    setSearchResultsVisible(false);
+    try {
+      const reply = await askOracle(question);
+      if (!nodes.some((n) => n.id === reply.tag)) throw new Error("L'oracolo indica una stella che non c'e'");
+      setOracle({ tag: reply.tag, asker: 'visitor', question, answer: reply.answer, answering: false, entries: reply.entries, silent: false });
+      setSearchTerm('');
+      selectTag(reply.tag);
+    } catch (err) {
+      // Senza Oracolo resta la ricerca per nome: si apre il primo tag trovato.
+      const first = searchMatches[0];
+      if (first) selectTag(first.id);
+      else setLoadError(err instanceof Error ? err.message : "L'oracolo non risponde");
+    } finally {
+      setAsking(false);
+    }
+  }, [asking, nodes, selectTag, searchMatches]);
+
+  // Chiede all'Oracolo la risposta alla domanda che ha fatto lui.
+  const askForAnswer = useCallback(async () => {
+    if (!oracle?.question || oracle.answering) return;
+    const { tag, question } = oracle;
+    const same = (current: OracleState | null) => current?.tag === tag && current.question === question;
+    setOracle({ ...oracle, answering: true });
+    try {
+      const reply = await fetchOracleAnswer(question, tag);
+      setOracle((current) => (same(current) ? { ...current!, answer: reply.answer, entries: reply.entries ?? [], answering: false } : current));
+    } catch {
+      setOracle((current) => (same(current) ? { ...current!, answering: false, silent: true } : current));
+    }
+  }, [oracle]);
+
   const submitSearch = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const first = searchMatches[0];
-    if (first) selectSearchResult(first);
+    askTheOracle(searchTerm);
   };
 
   const handleNodeClick = (node: GraphNode) => {
@@ -622,7 +705,13 @@ export default function App() {
       <div className="aurora aurora-one" />
       <div className="aurora aurora-two" />
       <div className="star-field" />
-      <div className="graph-layer">
+      <div
+        className="graph-layer"
+        onPointerDown={() => {
+          // La barra perde il fuoco: i tasti tornano a comandare le figure.
+          if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        }}
+      >
         <ForceGraph3D
           ref={graphRef as never}
           graphData={graph}
@@ -741,21 +830,35 @@ export default function App() {
         </div>
       </aside>
 
-      <form className="oracle-input-wrap" onSubmit={submitSearch}>
-        <div className="input-icon"><Search size={17} strokeWidth={1.5} /></div>
+      <form
+        className={`oracle-input-wrap${asking ? ' is-asking' : ''}${inviting ? ' is-inviting' : ''}`}
+        onSubmit={submitSearch}
+      >
+        <div className="input-icon"><Sparkles size={17} strokeWidth={1.5} /></div>
         <input
           value={searchTerm}
+          disabled={asking}
           onChange={(event) => {
             setSearchTerm(event.target.value);
             setSearchResultsVisible(true);
           }}
-          onFocus={() => setSearchResultsVisible(true)}
+          onFocus={() => {
+            setInviting(false);
+            setSearchResultsVisible(true);
+          }}
           onBlur={() => setTimeout(() => setSearchResultsVisible(false), 120)}
-          placeholder="Cerca un tag nella Nebulosa."
-          aria-label="Cerca un tag"
+          placeholder="Fai una domanda all'Oracolo, o cerca un tag"
+          aria-label="Fai una domanda all'Oracolo o cerca un tag"
         />
-        {searchResultsVisible && searchMatches.length > 0 && (
+        {asking && <span className="oracle-asking">l'Oracolo cerca tra le stelle…</span>}
+        {searchResultsVisible && !asking && searchTerm.trim() && (
           <ul className="search-results">
+            <li>
+              <button type="button" className="search-ask" onMouseDown={(e) => e.preventDefault()} onClick={() => askTheOracle(searchTerm)}>
+                <span className="search-result-label">Chiedi all'Oracolo: «{searchTerm.trim()}»</span>
+                <span className="search-result-count">invio</span>
+              </button>
+            </li>
             {searchMatches.map((node) => (
               <li key={node.id}>
                 <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => selectSearchResult(node)}>
@@ -764,11 +867,6 @@ export default function App() {
                 </button>
               </li>
             ))}
-          </ul>
-        )}
-        {searchResultsVisible && searchTerm.trim() && searchMatches.length === 0 && (
-          <ul className="search-results">
-            <li className="search-result-empty">Nessun tag corrisponde a "{searchTerm.trim()}"</li>
           </ul>
         )}
       </form>
@@ -788,10 +886,13 @@ export default function App() {
         tag={detailTag}
         linkedCount={linkedIds.size}
         trail={trail}
+        oracle={oracle}
         onClose={() => closeDetail()}
         onSelectTag={selectTag}
         onTrailStep={backToTrailStep}
         onHoverTag={setPanelHoverId}
+        onOracleAnswer={askForAnswer}
+        onOracleAnother={() => oracle && loadOracleQuestion(oracle.tag, true)}
       />
     </main>
   );

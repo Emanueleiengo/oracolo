@@ -1,5 +1,23 @@
-import { ArrowUpRight, ChevronRight, Hash, X } from 'lucide-react';
-import type { TagDetail } from '@/lib/api';
+import { ArrowUpRight, ChevronRight, Hash, Sparkles, X } from 'lucide-react';
+import type { OracleThought, TagDetail } from '@/lib/api';
+
+// Cosa dice l'Oracolo sulla stella aperta.
+export type OracleState = {
+  // stella a cui si riferisce
+  tag: string;
+  // chi ha fatto la domanda: il visitatore (dalla barra) o l'Oracolo stesso
+  asker: 'visitor' | 'oracle';
+  // null finche' l'Oracolo la sta formulando
+  question: string | null;
+  // null finche' non e' stata data
+  answer: string | null;
+  // vero mentre l'Oracolo sta rispondendo
+  answering: boolean;
+  // pensieri della nebulosa a cui si e' ispirata la risposta
+  entries: OracleThought[];
+  // l'Oracolo non e' raggiungibile: il riquadro non si mostra
+  silent: boolean;
+};
 
 type Props = {
   tag: TagDetail | null;
@@ -8,18 +26,37 @@ type Props = {
   linkedCount?: number;
   // Tappe del viaggio fatto finora, dalla prima alla stella aperta.
   trail?: string[];
+  oracle?: OracleState | null;
   onClose: () => void;
   onSelectTag: (name: string) => void;
   // Torna a una tappa precedente del viaggio (indice in `trail`).
   onTrailStep?: (index: number) => void;
   // Passando il mouse su un tag, la sua stella si illumina.
   onHoverTag?: (name: string | null) => void;
+  // Chiede all'Oracolo la risposta alla sua domanda, o un'altra domanda.
+  onOracleAnswer?: () => void;
+  onOracleAnother?: () => void;
 };
 
 // Scheda del tag, ancorata a destra: a differenza del vecchio modale non ha
 // sfondo scuro ne' blocca i click, cosi' la nebulosa resta navigabile.
-export default function TagDetailPanel({ tag, linkedCount, trail = [], onClose, onSelectTag, onTrailStep, onHoverTag }: Props) {
+export default function TagDetailPanel({
+  tag,
+  linkedCount,
+  trail = [],
+  oracle,
+  onClose,
+  onSelectTag,
+  onTrailStep,
+  onHoverTag,
+  onOracleAnswer,
+  onOracleAnother,
+}: Props) {
   if (!tag) return null;
+
+  // L'Oracolo parla solo della stella mostrata (la scheda puo' essere ancora
+  // quella precedente mentre la nuova si carica).
+  const voice = oracle && oracle.tag === tag.name && !oracle.silent ? oracle : null;
 
   const hover = (name: string) => ({
     onMouseEnter: () => onHoverTag?.(name),
@@ -60,6 +97,36 @@ export default function TagDetailPanel({ tag, linkedCount, trail = [], onClose, 
           <div><span>Frammenti</span><strong>{tag.count}</strong></div>
           <div><span>Stelle collegate</span><strong>{linkedCount ?? tag.related.length}</strong></div>
         </div>
+
+        {voice && (
+          <section className="detail-oracle" aria-label="L'Oracolo">
+            <p className="detail-oracle-heading"><Sparkles size={12} /> L'Oracolo</p>
+            {voice.asker === 'visitor' && <p className="detail-oracle-label">Hai chiesto</p>}
+            {voice.question ? (
+              <p className={`detail-oracle-question${voice.asker === 'visitor' ? ' is-visitor' : ''}`}>{voice.question}</p>
+            ) : (
+              <p className="detail-oracle-waiting">l'Oracolo ti osserva…</p>
+            )}
+            {voice.answering && <p className="detail-oracle-waiting">l'Oracolo riflette…</p>}
+            {voice.answer && <p className="detail-oracle-answer">{voice.answer}</p>}
+            {voice.answer && voice.entries.length > 0 && (
+              <div className="detail-oracle-sources">
+                <p className="detail-oracle-label">Pensieri che ha ascoltato</p>
+                {voice.entries.map((entry) => (
+                  <p key={entry.id}>{entry.text}</p>
+                ))}
+              </div>
+            )}
+            {voice.asker === 'oracle' && voice.question && (
+              <div className="detail-oracle-actions">
+                {!voice.answer && (
+                  <button onClick={onOracleAnswer} disabled={voice.answering}>chiedi la risposta</button>
+                )}
+                <button onClick={onOracleAnother} disabled={voice.answering}>un'altra domanda</button>
+              </div>
+            )}
+          </section>
+        )}
 
         {tag.entries.length > 0 && (
           <div className="detail-entries">

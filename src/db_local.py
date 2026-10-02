@@ -26,6 +26,13 @@ CREATE TABLE IF NOT EXISTS entry_tags (
     tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (entry_id, tag_id)
 );
+
+CREATE TABLE IF NOT EXISTS entry_embeddings (
+    entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,             -- modello che ha prodotto il vettore
+    text_hash TEXT NOT NULL,         -- impronta del testo: se cambia va ricalcolato
+    vector BLOB NOT NULL             -- vettore normalizzato, float a 32 bit
+);
 """
 
 
@@ -139,3 +146,28 @@ def get_entries_with_tags() -> list[dict]:
                 }
             )
         return result
+
+
+def get_entry_embeddings() -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT entry_id, model, text_hash, vector FROM entry_embeddings"
+        ).fetchall()
+
+
+def upsert_entry_embeddings(rows: list[dict]) -> None:
+    """Salva (o sostituisce) i vettori di similarita' delle entry."""
+    if not rows:
+        return
+    with get_connection() as conn:
+        conn.executemany(
+            """
+            INSERT INTO entry_embeddings (entry_id, model, text_hash, vector)
+            VALUES (:entry_id, :model, :text_hash, :vector)
+            ON CONFLICT(entry_id) DO UPDATE SET
+                model = excluded.model,
+                text_hash = excluded.text_hash,
+                vector = excluded.vector
+            """,
+            rows,
+        )

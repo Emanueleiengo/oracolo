@@ -42,14 +42,22 @@ python -m src.main seed      # inserisce dati di prova gia' taggati (per testare
 ```
 
 Apri `http://localhost:8000/` (con `serve` avviato) per esplorare la nebulosa
-dei tag: cerca un tag dalla barra in basso, clicca un nodo per vedere i
-frammenti che lo usano e i tag collegati.
+dei tag: scrivi una domanda nella barra in basso e l'Oracolo ti porta sulla
+stella che raccoglie i pensieri piu' vicini, rispondendoti; da li' prosegui
+di stella in stella, e in ognuna e' l'Oracolo a farti una domanda. La stessa
+barra cerca anche i tag per nome; cliccando una stella si vedono i frammenti
+che la usano e i tag collegati.
 
 Il server espone anche endpoint JSON usati dal frontend:
 - `GET /api/graph` — nodi (tag) e archi (co-occorrenze) dell'intero grafo
 - `GET /api/tag/<nome>` — frammenti e tag collegati per un singolo tag
 - `GET /api/questions` — domande evocative generate al volo da Ollama, usate da `question.html`
-- `POST /api/answer` — risposta criptica dell'Oracolo a una domanda (`{"question": "..."}`)
+- `POST /api/ask` — domanda scritta dal visitatore (`{"question": "..."}`): ritorna la
+  stella a cui indirizzarlo, la risposta dell'Oracolo e i pensieri piu' vicini
+- `GET /api/oracle/question?tag=<nome>&trail=<tappe,precedenti>` — domanda che
+  l'Oracolo fa a chi si ferma su una stella
+- `POST /api/answer` — risposta criptica dell'Oracolo a una domanda
+  (`{"question": "...", "tag": "<stella, facoltativa>"}`), ispirata ai pensieri piu' vicini
 
 Apri `http://localhost:8000/question.html` per "l'Oracolo": una domanda
 generata al volo (serve Ollama raggiungibile), con un pulsante per rerollare
@@ -58,9 +66,12 @@ anche dal pulsante a forma di stella nell'header della Nebulosa.
 
 ## Note
 
-- `OLLAMA_EMBED_MODEL` (bge-m3) e' pensato per usi futuri di similarita'
-  semantica tra entry; il tagging attuale usa solo `OLLAMA_TAG_MODEL`
-  (un modello generativo, es. llama3.1) per scrivere i tag testuali.
+- `OLLAMA_EMBED_MODEL` (bge-m3) misura la similarita' di significato tra una
+  domanda e le entry: serve all'Oracolo per scegliere la stella e i pensieri
+  a cui ispirarsi. I vettori delle entry si calcolano da soli alla prima
+  domanda (qualche decina di secondi) e restano nel DB locale.
+  `OLLAMA_TAG_MODEL` (un modello generativo, es. llama3.1) scrive i tag, le
+  domande e le risposte.
 - Il DB locale (`data/local.db`) non e' versionato: verra' ricreato al
   primo `sync`.
 - `layoutBoltNebulosa/project` era in origine un progetto Bolt.new basato
