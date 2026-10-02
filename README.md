@@ -56,6 +56,7 @@ Il server espone anche endpoint JSON usati dal frontend:
   stella a cui indirizzarlo, la risposta dell'Oracolo e i pensieri piu' vicini
 - `GET /api/oracle/question?tag=<nome>&trail=<tappe,precedenti>` — domanda che
   l'Oracolo fa a chi si ferma su una stella
+- `GET /api/health` — stato del server e di Ollama: dice in chiaro cosa manca se l'Oracolo non risponde
 - `POST /api/answer` — risposta criptica dell'Oracolo a una domanda
   (`{"question": "...", "tag": "<stella, facoltativa>"}`), ispirata ai pensieri piu' vicini
 

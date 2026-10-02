@@ -12,7 +12,6 @@ import {
 } from '@/lib/api';
 import TagDetailPanel, { type OracleState } from '@/components/TagDetailPanel';
 import { SHAPE_KEYS, getConstellation, type Anchor, type Constellation, type ShapeId } from './constellation';
-import miaIcona from './mistakelogo.png';
 
 type GraphNode = {
   id: string;
@@ -796,7 +795,6 @@ export default function App() {
 
       <header className="topbar">
         <div className="brand-lockup">
-          <img src={miaIcona} alt="Icona Nebulosa" className="w-9 h-10" />
           <div>
             <p className="eyebrow">Oracolo</p>
             <h1>LA NEBULOSA</h1>

@@ -1,4 +1,5 @@
 import json
+import time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -6,17 +7,84 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import requests
 
-from src import config, graph, oracle
+from src import config, db_local, graph, oracle
 from src.logging_utils import get_logger
 from src.question import generate_questions
 from src.tagdetail import build_tag_detail
 
 log = get_logger(__name__)
 
+# Momento in cui questo server e' partito: un server legge il codice solo
+# all'avvio, quindi dopo un aggiornamento va riavviato.
+STARTED_AT = time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _ollama_problem(error: requests.RequestException) -> str:
+    """Spiega in parole semplici perche' una chiamata a Ollama e' fallita."""
+    if isinstance(error, requests.Timeout):
+        return f"Ollama non ha risposto entro {config.OLLAMA_TIMEOUT_SECONDS} secondi"
+    if isinstance(error, requests.ConnectionError):
+        return f"Ollama non e' raggiungibile su {config.OLLAMA_HOST}: e' acceso?"
+    if isinstance(error, requests.HTTPError) and error.response is not None:
+        detail = error.response.text.strip()[:200]
+        return f"Ollama ha risposto con un errore ({error.response.status_code}): {detail}"
+    return f"chiamata a Ollama fallita: {error}"
+
+
+def _health() -> dict:
+    """Stato del server e di cio' che serve all'Oracolo, per capire a colpo
+    d'occhio cosa non va (GET /api/health)."""
+    entries = db_local.get_entries_with_tags()
+    status: dict = {
+        "avviato": STARTED_AT,
+        "entry": len(entries),
+        "entry_con_tag": sum(1 for e in entries if e["tags"]),
+        "ollama": {"indirizzo": config.OLLAMA_HOST},
+    }
+    try:
+        db_local.init_db()
+        status["entry_con_vettore"] = len(db_local.get_entry_embeddings())
+        response = requests.get(f"{config.OLLAMA_HOST}/api/tags", timeout=10)
+        response.raise_for_status()
+        models = [m["name"] for m in response.json().get("models", [])]
+        wanted = [config.OLLAMA_TAG_MODEL, config.OLLAMA_EMBED_MODEL]
+        missing = [w for w in wanted if not any(m == w or m.startswith(f"{w}:") for m in models)]
+        status["ollama"].update(raggiungibile=True, modelli=models, modelli_mancanti=missing)
+        status["problema"] = (
+            f"su Ollama mancano i modelli: {', '.join(missing)}" if missing else None
+        )
+    except requests.RequestException as error:
+        status["ollama"]["raggiungibile"] = False
+        status["problema"] = _ollama_problem(error)
+    if status.get("problema") is None and not status["entry_con_tag"]:
+        status["problema"] = "nessuna entry con tag: esegui 'sync' e 'tag' (o 'seed')"
+    return status
+
 
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path.startswith("/api/"):
+            self._guarded(self._api_get, path)
+            return
+        super().do_GET()
+
+    def do_POST(self):
+        path = urlsplit(self.path).path
+        self._guarded(self._api_post, path)
+
+    def _guarded(self, handler, path: str) -> None:
+        """Esegue una richiesta API; qualunque errore imprevisto diventa una
+        risposta leggibile invece di una connessione chiusa."""
+        try:
+            handler(path)
+        except Exception as error:  # noqa: BLE001 - va segnalato qualunque errore
+            log.exception("Errore imprevisto su %s", path)
+            self._send_json(
+                500, {"error": f"errore interno del server ({type(error).__name__}: {error})"}
+            )
+
+    def _api_get(self, path: str) -> None:
         if path == "/api/graph":
             self._send_json(200, graph.build_graph_json())
             return
@@ -30,17 +98,19 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/oracle/question":
             self._handle_oracle_question()
             return
-        super().do_GET()
+        if path == "/api/health":
+            self._send_json(200, _health())
+            return
+        self._send_json(404, {"error": "indirizzo sconosciuto"})
 
-    def do_POST(self):
-        path = urlsplit(self.path).path
+    def _api_post(self, path: str) -> None:
         if path == "/api/answer":
             self._handle_answer()
             return
         if path == "/api/ask":
             self._handle_ask()
             return
-        self.send_error(404)
+        self._send_json(404, {"error": "indirizzo sconosciuto"})
 
     def _handle_tag_detail(self, tag_name: str) -> None:
         detail = build_tag_detail(tag_name)
@@ -52,8 +122,8 @@ class Handler(SimpleHTTPRequestHandler):
     def _handle_questions(self) -> None:
         try:
             questions = generate_questions()
-        except requests.RequestException:
-            self._oracle_unreachable()
+        except requests.RequestException as error:
+            self._oracle_unreachable(error)
             return
         if not questions:
             self._send_json(502, {"error": "nessuna domanda disponibile"})
@@ -70,8 +140,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         try:
             question = oracle.question_for_tag(tag, trail)
-        except requests.RequestException:
-            self._oracle_unreachable()
+        except requests.RequestException as error:
+            self._oracle_unreachable(error)
             return
         if question is None:
             self._send_json(404, {"error": "tag non trovato"})
@@ -90,8 +160,8 @@ class Handler(SimpleHTTPRequestHandler):
         tag = str(body.get("tag") or "").strip() or None
         try:
             self._send_json(200, oracle.answer(question, tag))
-        except requests.RequestException:
-            self._oracle_unreachable()
+        except requests.RequestException as error:
+            self._oracle_unreachable(error)
 
     def _handle_ask(self) -> None:
         """Domanda scritta dal visitatore: lo indirizza a una stella e risponde."""
@@ -104,8 +174,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         try:
             result = oracle.ask(question)
-        except requests.RequestException:
-            self._oracle_unreachable()
+        except requests.RequestException as error:
+            self._oracle_unreachable(error)
             return
         if result is None:
             self._send_json(502, {"error": "la nebulosa e' ancora vuota"})
@@ -124,9 +194,9 @@ class Handler(SimpleHTTPRequestHandler):
             return None
         return body
 
-    def _oracle_unreachable(self) -> None:
+    def _oracle_unreachable(self, error: requests.RequestException) -> None:
         log.exception("Chiamata a Ollama fallita (host %s raggiungibile?)", config.OLLAMA_HOST)
-        self._send_json(502, {"error": "l'oracolo non risponde"})
+        self._send_json(502, {"error": f"L'oracolo non risponde: {_ollama_problem(error)}"})
 
     def _send_json(self, status: int, payload) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
