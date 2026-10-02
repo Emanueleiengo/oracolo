@@ -43,23 +43,26 @@ python -m src.main seed      # inserisce dati di prova gia' taggati (per testare
 ```
 
 Apri `http://localhost:8000/` (con `serve` avviato) per esplorare la nebulosa
-dei tag: scrivi una domanda nella barra in basso e l'Oracolo ti porta sulla
-stella che raccoglie i pensieri piu' vicini, rispondendoti; da li' prosegui
-di stella in stella, e in ognuna e' l'Oracolo a farti una domanda. La stessa
-barra cerca anche i tag per nome; cliccando una stella si vedono i frammenti
-che la usano e i tag collegati.
+dei tag. In basso c'e' l'area delle domande: alcune suggerite e la barra per
+scrivere la propria. Fatta la domanda, la nebulosa ti porta al suo interno e
+si ferma sulla stella che raccoglie i pensieri piu' vicini: la stella pulsa
+e nella scheda accanto compare la risposta dell'Oracolo. Da li' puoi fare
+un'altra domanda oppure viaggiare nella nebulosa: ogni altra stella che apri
+risponde alla tua domanda a modo suo. La stessa barra cerca anche i tag per
+nome; nella scheda si vedono i frammenti della stella e i tag collegati.
 
 Il server espone anche endpoint JSON usati dal frontend:
 - `GET /api/graph` — nodi (tag) e archi (co-occorrenze) dell'intero grafo
 - `GET /api/tag/<nome>` — frammenti e tag collegati per un singolo tag
 - `GET /api/questions` — domande evocative generate al volo da Ollama, usate da `question.html`
-- `POST /api/ask` — domanda scritta dal visitatore (`{"question": "..."}`): ritorna la
-  stella a cui indirizzarlo, la risposta dell'Oracolo e i pensieri piu' vicini
+- `GET /api/suggestions` — alcune domande da proporre a chi entra
+- `POST /api/ask` — domanda del visitatore (`{"question": "..."}`): ritorna la stella a
+  cui portarlo, le stelle da attraversare, la risposta dell'Oracolo e i pensieri piu' vicini
 - `GET /api/oracle/question?tag=<nome>&trail=<tappe,precedenti>` — domanda che
   l'Oracolo fa a chi si ferma su una stella
 - `GET /api/health` — stato del server e di Ollama: dice in chiaro cosa manca se l'Oracolo non risponde
-- `POST /api/answer` — risposta criptica dell'Oracolo a una domanda
-  (`{"question": "...", "tag": "<stella, facoltativa>"}`), ispirata ai pensieri piu' vicini
+- `POST /api/answer` — testo oracolare (`{"question": "<facoltativa>", "tag": "<stella>"}`):
+  la risposta alla domanda vista da quella stella o, senza domanda, una sentenza sul suo tema
 
 Apri `http://localhost:8000/question.html` per "l'Oracolo": una domanda
 generata al volo (serve Ollama raggiungibile), con un pulsante per rerollare

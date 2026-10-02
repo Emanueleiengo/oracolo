@@ -98,6 +98,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/oracle/question":
             self._handle_oracle_question()
             return
+        if path == "/api/suggestions":
+            self._send_json(200, {"questions": oracle.suggestions()})
+            return
         if path == "/api/health":
             self._send_json(200, _health())
             return
@@ -149,15 +152,16 @@ class Handler(SimpleHTTPRequestHandler):
         self._send_json(200, {"question": question})
 
     def _handle_answer(self) -> None:
-        """Risposta dell'Oracolo: {"question": "...", "tag": "<stella, facoltativa>"}."""
+        """Testo oracolare: {"question": "<facoltativa>", "tag": "<stella, facoltativa>"}.
+        Con la domanda e' la risposta; con la sola stella e' una sentenza sul suo tema."""
         body = self._read_json()
         if body is None:
             return
-        question = str(body.get("question", "")).strip()
-        if not question:
-            self._send_json(400, {"error": "manca 'question'"})
-            return
+        question = str(body.get("question") or "").strip() or None
         tag = str(body.get("tag") or "").strip() or None
+        if not question and not tag:
+            self._send_json(400, {"error": "serve 'question' oppure 'tag'"})
+            return
         try:
             self._send_json(200, oracle.answer(question, tag))
         except requests.RequestException as error:

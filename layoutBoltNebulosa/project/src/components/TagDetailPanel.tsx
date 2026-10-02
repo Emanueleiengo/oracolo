@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowUpRight, ChevronRight, Hash, Sparkles, X } from 'lucide-react';
 import type { OracleThought, TagDetail } from '@/lib/api';
 
@@ -5,19 +6,39 @@ import type { OracleThought, TagDetail } from '@/lib/api';
 export type OracleState = {
   // stella a cui si riferisce
   tag: string;
-  // chi ha fatto la domanda: il visitatore (dalla barra) o l'Oracolo stesso
-  asker: 'visitor' | 'oracle';
-  // null finche' l'Oracolo la sta formulando
+  // domanda del visitatore a cui la stella risponde (null = nessuna: la
+  // stella pronuncia una sentenza sul suo tema)
   question: string | null;
-  // null finche' non e' stata data
-  answer: string | null;
-  // vero mentre l'Oracolo sta rispondendo
-  answering: boolean;
-  // pensieri della nebulosa a cui si e' ispirata la risposta
+  // testo oracolare; null finche' l'Oracolo lo sta formulando
+  text: string | null;
+  // pensieri della nebulosa a cui si e' ispirato
   entries: OracleThought[];
   // l'Oracolo non e' raggiungibile: il riquadro non si mostra
   silent: boolean;
 };
+
+// Il testo dell'Oracolo compare una parola alla volta, come se lo stesse
+// pronunciando in quel momento.
+function OracleText({ text }: { text: string }) {
+  const words = useMemo(() => text.split(/\s+/).filter(Boolean), [text]);
+  const still = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const [said, setSaid] = useState(still ? words.length : 0);
+
+  useEffect(() => {
+    if (said >= words.length) return;
+    const timer = window.setTimeout(() => setSaid(said + 1), said === 0 ? 500 : 130);
+    return () => window.clearTimeout(timer);
+  }, [said, words.length]);
+
+  return (
+    <p className="detail-oracle-answer" aria-label={text}>
+      {words.map((word, i) => (
+        // le parole non cambiano posizione: la chiave puo' essere l'indice
+        <span key={i} className={i < said ? 'is-said' : undefined} aria-hidden="true">{word} </span>
+      ))}
+    </p>
+  );
+}
 
 type Props = {
   tag: TagDetail | null;
@@ -33,9 +54,9 @@ type Props = {
   onTrailStep?: (index: number) => void;
   // Passando il mouse su un tag, la sua stella si illumina.
   onHoverTag?: (name: string | null) => void;
-  // Chiede all'Oracolo la risposta alla sua domanda, o un'altra domanda.
-  onOracleAnswer?: () => void;
-  onOracleAnother?: () => void;
+  // Dopo la risposta: fare un'altra domanda, o viaggiare nella nebulosa.
+  onAskAnother?: () => void;
+  onWander?: () => void;
 };
 
 // Scheda del tag, ancorata a destra: a differenza del vecchio modale non ha
@@ -49,8 +70,8 @@ export default function TagDetailPanel({
   onSelectTag,
   onTrailStep,
   onHoverTag,
-  onOracleAnswer,
-  onOracleAnother,
+  onAskAnother,
+  onWander,
 }: Props) {
   if (!tag) return null;
 
@@ -101,15 +122,18 @@ export default function TagDetailPanel({
         {voice && (
           <section className="detail-oracle" aria-label="L'Oracolo">
             <p className="detail-oracle-heading"><Sparkles size={12} /> L'Oracolo</p>
-            {voice.asker === 'visitor' && <p className="detail-oracle-label">Hai chiesto</p>}
-            {voice.question ? (
-              <p className={`detail-oracle-question${voice.asker === 'visitor' ? ' is-visitor' : ''}`}>{voice.question}</p>
-            ) : (
-              <p className="detail-oracle-waiting">l'Oracolo ti osserva…</p>
+            {voice.question && (
+              <>
+                <p className="detail-oracle-label">Hai chiesto</p>
+                <p className="detail-oracle-question">{voice.question}</p>
+              </>
             )}
-            {voice.answering && <p className="detail-oracle-waiting">l'Oracolo riflette…</p>}
-            {voice.answer && <p className="detail-oracle-answer">{voice.answer}</p>}
-            {voice.answer && voice.entries.length > 0 && (
+            {voice.text ? (
+              <OracleText key={voice.text} text={voice.text} />
+            ) : (
+              <p className="detail-oracle-waiting">la stella sta per parlare…</p>
+            )}
+            {voice.text && voice.entries.length > 0 && (
               <div className="detail-oracle-sources">
                 <p className="detail-oracle-label">Pensieri che ha ascoltato</p>
                 {voice.entries.map((entry) => (
@@ -117,14 +141,10 @@ export default function TagDetailPanel({
                 ))}
               </div>
             )}
-            {voice.asker === 'oracle' && voice.question && (
-              <div className="detail-oracle-actions">
-                {!voice.answer && (
-                  <button onClick={onOracleAnswer} disabled={voice.answering}>chiedi la risposta</button>
-                )}
-                <button onClick={onOracleAnother} disabled={voice.answering}>un'altra domanda</button>
-              </div>
-            )}
+            <div className="detail-oracle-actions">
+              <button onClick={onAskAnother}>fai un'altra domanda</button>
+              <button onClick={onWander}>viaggia nella nebulosa</button>
+            </div>
           </section>
         )}
 

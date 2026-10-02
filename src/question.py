@@ -24,7 +24,7 @@ Scrivi esattamente {count} domande da fare a chi ti visita, sulla SUA vita. Rego
 - non iniziare con "Ricordi", "Cosa significa" o "Come puoi".
 
 Esempi del tono (non copiarli):
-- Di chi e' la voce che senti quando la casa e' vuota?
+- Di chi è la voce che senti quando la casa è vuota?
 - Da quanto tempo non apri quel cassetto?
 - Chi ti aspettava alla fermata, quel giorno?
 

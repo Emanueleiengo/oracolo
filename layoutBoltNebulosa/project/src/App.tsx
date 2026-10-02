@@ -5,7 +5,7 @@ import {
   askOracle,
   fetchGraph,
   fetchOracleAnswer,
-  fetchOracleQuestion,
+  fetchSuggestions,
   fetchTagDetail,
   type TagDetail,
   type TagGraph,
@@ -111,6 +111,39 @@ function importanceColor(importance: number, id: string): string {
   return shaded(c0.map((v, channel) => v + (c1[channel] - v) * k), id, FAINTEST_STAR + (1 - FAINTEST_STAR) * t);
 }
 
+// Viaggio verso la stella trovata dall'Oracolo: quanto dura, e a che
+// distanza la camera passa accanto alle stelle intermedie.
+const TRAVEL_MS = 5200;
+const TRAVEL_PASS_DISTANCE = 90;
+// Distanza da cui si guardano una stella e le sue vicine quando si sceglie
+// di viaggiare nella nebulosa.
+const WANDER_DISTANCE = 430;
+// Battito della stella aperta (e del suo alone): periodo in secondi e
+// quanto si gonfia.
+const PULSE_PERIOD = 2.6;
+const PULSE_SWELL = 0.16;
+
+type Vec3 = [number, number, number];
+
+// Punto a frazione `u` (0-1) della curva morbida che passa per `points`
+// (Catmull-Rom uniforme).
+function alongPath(points: Vec3[], u: number): Vec3 {
+  const last = points.length - 1;
+  const scaled = Math.min(0.999999, Math.max(0, u)) * last;
+  const i = Math.floor(scaled);
+  const t = scaled - i;
+  const p0 = points[Math.max(0, i - 1)];
+  const p1 = points[i];
+  const p2 = points[i + 1];
+  const p3 = points[Math.min(last, i + 2)];
+  return [0, 1, 2].map((axis) => 0.5 * (
+    2 * p1[axis]
+    + (p2[axis] - p0[axis]) * t
+    + (2 * p0[axis] - 5 * p1[axis] + 4 * p2[axis] - p3[axis]) * t * t
+    + (3 * p1[axis] - p0[axis] - 3 * p2[axis] + p3[axis]) * t * t * t
+  )) as Vec3;
+}
+
 // Raggio (nelle unita' del grafo) della luce soffusa attorno alla stella
 // aperta: circa quattro volte il raggio della stella.
 const GLOW_RADIUS = 34;
@@ -180,6 +213,13 @@ export default function App() {
   const [oracle, setOracle] = useState<OracleState | null>(null);
   // Vero mentre l'Oracolo cerca la stella per una domanda del visitatore.
   const [asking, setAsking] = useState(false);
+  // Vero mentre la camera viaggia verso la stella trovata.
+  const [traveling, setTraveling] = useState(false);
+  // Domanda del visitatore che guida il viaggio: ogni stella che apre gli
+  // risponde a modo suo, finche' non ne fa un'altra.
+  const [visitorQuestion, setVisitorQuestion] = useState<string | null>(null);
+  // Domande proposte sopra la barra.
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
   const [detailTag, setDetailTag] = useState<TagDetail | null>(null);
@@ -203,10 +243,14 @@ export default function App() {
   const selectionRef = useRef<string | null>(null);
   // Se le stelle sono (o erano fino a un attimo fa) organizzate in una figura.
   const shapeWasActive = useRef(false);
-  // Domande gia' fatte dall'Oracolo, per stella: riaprendola si ritrova la stessa.
-  const oracleQuestions = useRef(new Map<string, string>());
-  // Tappe del viaggio, leggibili anche da dentro le richieste in corso.
-  const trailRef = useRef<string[]>([]);
+  // Testi gia' detti dall'Oracolo, per domanda e stella: riaprendo una
+  // stella si ritrova lo stesso.
+  const oracleTexts = useRef(new Map<string, Pick<OracleState, 'text' | 'entries'>>());
+  const askInputRef = useRef<HTMLInputElement>(null);
+  // Fotogramma in corso del viaggio della camera (0 = nessun viaggio).
+  const travelFrame = useRef(0);
+  // Stella aperta, leggibile dal ciclo che anima le stelle.
+  const selectedRef = useRef<string | null>(null);
 
   // ── Load the tag graph from Oracolo ──
   const loadGraph = useCallback(async () => {
@@ -279,12 +323,15 @@ export default function App() {
     }));
     let frame = 0;
     const tick = (now: number) => {
+      // Battito della stella aperta: e' viva, sta parlando.
+      const beat = 0.5 + 0.5 * Math.sin((now / 1000) * ((2 * Math.PI) / PULSE_PERIOD));
       for (const { node, speed, phase } of rhythms) {
         const star = node.__threeObj;
         if (!star) continue;
+        const alive = node.id === selectedRef.current;
         // 0 a riposo, 1 al culmine; al quadrato perche' il culmine sia breve.
-        const wave = Math.pow(0.5 + 0.5 * Math.sin((now / 1000) * speed + phase), 2);
-        star.scale.setScalar(1 + TWINKLE_SWELL * wave);
+        const wave = alive ? beat : Math.pow(0.5 + 0.5 * Math.sin((now / 1000) * speed + phase), 2);
+        star.scale.setScalar(1 + (alive ? PULSE_SWELL : TWINKLE_SWELL) * wave);
         if (star.material?.emissive) {
           star.material.emissive.copy(star.material.color);
           star.material.emissiveIntensity = TWINKLE_GLOW * wave;
@@ -313,7 +360,7 @@ export default function App() {
       return;
     }
     let frame = 0;
-    const follow = () => {
+    const follow = (now: number) => {
       const fg = graphRef.current;
       if (fg && node.x != null && node.y != null && node.z != null) {
         const cam = fg.camera();
@@ -324,11 +371,13 @@ export default function App() {
           const { x, y } = fg.graph2ScreenCoords(node.x, node.y, node.z);
           const viewHeight = glow.parentElement?.querySelector('canvas')?.clientHeight ?? window.innerHeight;
           const pxPerUnit = viewHeight / 2 / Math.tan((cam.fov * Math.PI) / 360) / ahead;
-          const size = GLOW_RADIUS * 2 * pxPerUnit;
+          // L'alone respira insieme al battito della stella.
+          const beat = 0.5 + 0.5 * Math.sin((now / 1000) * ((2 * Math.PI) / PULSE_PERIOD));
+          const size = GLOW_RADIUS * 2 * pxPerUnit * (1 + 0.22 * beat);
           glow.style.width = `${size}px`;
           glow.style.height = `${size}px`;
           glow.style.transform = `translate(${x - size / 2}px, ${y - size / 2}px)`;
-          glow.style.opacity = '1';
+          glow.style.opacity = String(0.7 + 0.3 * beat);
         } else {
           glow.style.opacity = '0';
         }
@@ -451,12 +500,12 @@ export default function App() {
     setHighlightedIds(searchMatches.map((n) => n.id));
   }, [searchMatches]);
 
-  // Zoom su una stella: la camera si avvicina mantenendo la direzione da cui
-  // la si guardava, e la mira e' spostata un po' a destra della stella cosi'
-  // che questa finisca nello spazio libero a sinistra del pannello.
-  const flyToNode = useCallback((node: GraphNode) => {
+  // Inquadratura di una stella aperta: la camera le sta davanti, nella
+  // direzione da cui la si guardava, e la mira e' spostata un po' a destra
+  // cosi' che la stella finisca nello spazio libero a sinistra del pannello.
+  const focusView = useCallback((node: GraphNode) => {
     const fg = graphRef.current;
-    if (!fg || node.x == null || node.y == null || node.z == null) return;
+    if (!fg || node.x == null || node.y == null || node.z == null) return null;
     const cam = fg.camera();
 
     let dx = cam.position.x - node.x;
@@ -477,12 +526,17 @@ export default function App() {
     const halfWidth = FOCUS_DISTANCE * Math.tan((cam.fov * Math.PI) / 360) * cam.aspect;
     const shift = share * halfWidth;
 
-    fg.cameraPosition(
-      { x: node.x + dx * FOCUS_DISTANCE, y: node.y + dy * FOCUS_DISTANCE, z: node.z + dz * FOCUS_DISTANCE },
-      { x: node.x + rx * shift, y: node.y, z: node.z + rz * shift },
-      1000
-    );
+    return {
+      position: { x: node.x + dx * FOCUS_DISTANCE, y: node.y + dy * FOCUS_DISTANCE, z: node.z + dz * FOCUS_DISTANCE },
+      lookAt: { x: node.x + rx * shift, y: node.y, z: node.z + rz * shift },
+    };
   }, []);
+
+  // Zoom su una stella.
+  const flyToNode = useCallback((node: GraphNode) => {
+    const view = focusView(node);
+    if (view) graphRef.current?.cameraPosition(view.position, view.lookAt, 1000);
+  }, [focusView]);
 
   // Stelle collegate a quella selezionata (tutte, dal grafo completo).
   const adjacency = useMemo(() => {
@@ -510,13 +564,14 @@ export default function App() {
     return steps;
   }, [trail]);
 
-  // Apre un tag: zoom sulla stella, illumina le collegate e carica la scheda.
-  const openTag = useCallback(async (id: string) => {
+  // Apre un tag: zoom sulla stella (a meno che la camera non ci sia gia'
+  // arrivata da sola: `fly` falso), illumina le collegate e carica la scheda.
+  const openTag = useCallback(async (id: string, fly = true) => {
     selectionRef.current = id;
     setSelectedId(id);
     setSearchResultsVisible(false);
     const node = graph.nodes.find((n) => n.id === id);
-    if (node) flyToNode(node);
+    if (node && fly) flyToNode(node);
     try {
       const detail = await fetchTagDetail(id);
       if (selectionRef.current === id) setDetailTag(detail);
@@ -527,13 +582,13 @@ export default function App() {
 
   // Seleziona un tag: lo apre e lo aggiunge al viaggio (che riparte da capo
   // se non e' collegato all'ultima tappa).
-  const selectTag = useCallback((id: string) => {
+  const selectTag = useCallback((id: string, fly = true) => {
     setTrail((current) => {
       const last = current[current.length - 1];
       if (last === id) return current;
       return last !== undefined && adjacency.get(last)?.has(id) ? [...current, id] : [id];
     });
-    openTag(id);
+    openTag(id, fly);
   }, [adjacency, openTag]);
 
   // Torna a una tappa precedente del viaggio: le tappe successive si spengono.
@@ -568,46 +623,130 @@ export default function App() {
 
   // ── L'Oracolo ──
   useEffect(() => {
-    trailRef.current = trail;
-  }, [trail]);
+    selectedRef.current = selectedId;
+  }, [selectedId]);
 
-  // L'Oracolo fa una domanda a chi si e' fermato su una stella. Con `fresh`
-  // ne formula una nuova anche se per quella stella ne aveva gia' fatta una.
-  const loadOracleQuestion = useCallback(async (tag: string, fresh: boolean) => {
-    const known = fresh ? undefined : oracleQuestions.current.get(tag);
-    setOracle({ tag, asker: 'oracle', question: known ?? null, answer: null, answering: false, entries: [], silent: false });
-    if (known) return;
-    const stillHere = (current: OracleState | null) => current?.tag === tag && current.asker === 'oracle';
+  // Domande suggerite a chi entra, e a chi ne vuole fare un'altra.
+  const loadSuggestions = useCallback(async () => {
     try {
-      const question = await fetchOracleQuestion(tag, trailRef.current);
-      oracleQuestions.current.set(tag, question);
-      setOracle((current) => (stillHere(current) ? { ...current!, question } : current));
+      setSuggestions(await fetchSuggestions());
+    } catch {
+      setSuggestions([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!loading) loadSuggestions();
+  }, [loading, loadSuggestions]);
+
+  // Testo oracolare della stella `tag`: la risposta alla domanda del
+  // visitatore vista da quella stella oppure, senza domanda, una sentenza
+  // sul suo tema.
+  const loadOracleText = useCallback(async (tag: string, question: string | null) => {
+    const key = `${question ?? ''}|${tag}`;
+    const known = oracleTexts.current.get(key);
+    setOracle({ tag, question, text: known?.text ?? null, entries: known?.entries ?? [], silent: false });
+    if (known) return;
+    const stillHere = (current: OracleState | null) => current?.tag === tag && current.question === question;
+    try {
+      const reply = await fetchOracleAnswer(question, tag);
+      const voice = { text: reply.answer, entries: reply.entries ?? [] };
+      oracleTexts.current.set(key, voice);
+      setOracle((current) => (stillHere(current) ? { ...current!, ...voice } : current));
     } catch {
       // Senza Oracolo (Ollama spento, export statico) il riquadro non compare.
       setOracle((current) => (stillHere(current) ? { ...current!, silent: true } : current));
     }
   }, []);
 
-  // Aprendo una stella senza esserci arrivati con una domanda, e' l'Oracolo
-  // a farne una.
+  // Ogni stella che si apre ha il suo testo oracolare.
   useEffect(() => {
     if (!selectedId || oracle?.tag === selectedId) return;
-    loadOracleQuestion(selectedId, false);
-  }, [selectedId, oracle, loadOracleQuestion]);
+    loadOracleText(selectedId, visitorQuestion);
+  }, [selectedId, oracle, visitorQuestion, loadOracleText]);
 
-  // Il visitatore scrive una domanda: l'Oracolo lo indirizza alla stella che
-  // raccoglie i pensieri piu' vicini e gli risponde. Da li' parte il viaggio.
+  useEffect(() => () => cancelAnimationFrame(travelFrame.current), []);
+
+  // Viaggio: la camera entra nella nebulosa, passa accanto alle stelle `via`
+  // e si ferma davanti a `target`, dove chiama `onArrive`.
+  const travelTo = useCallback((target: GraphNode, via: GraphNode[], onArrive: () => void) => {
+    const fg = graphRef.current;
+    const end = focusView(target);
+    if (!fg || !end || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      if (end) fg?.cameraPosition(end.position, end.lookAt, 0);
+      onArrive();
+      return;
+    }
+    const cam = fg.camera().position;
+    const points: Vec3[] = [[cam.x, cam.y, cam.z]];
+    for (const star of via) {
+      if (star.x == null || star.y == null || star.z == null) continue;
+      // Accanto alla stella, dal lato da cui si arriva: non ci si passa dentro.
+      const prev = points[points.length - 1];
+      const d: Vec3 = [prev[0] - star.x, prev[1] - star.y, prev[2] - star.z];
+      const len = Math.hypot(d[0], d[1], d[2]) || 1;
+      points.push([
+        star.x + (d[0] / len) * TRAVEL_PASS_DISTANCE,
+        star.y + (d[1] / len) * TRAVEL_PASS_DISTANCE,
+        star.z + (d[2] / len) * TRAVEL_PASS_DISTANCE,
+      ]);
+    }
+    points.push([end.position.x, end.position.y, end.position.z]);
+
+    const aim = (fg.controls() as { target?: { x: number; y: number; z: number } } | undefined)?.target;
+    const from: Vec3 = aim ? [aim.x, aim.y, aim.z] : [0, 0, 0];
+    const to: Vec3 = [end.lookAt.x, end.lookAt.y, end.lookAt.z];
+    const start = performance.now();
+    setTraveling(true);
+    cancelAnimationFrame(travelFrame.current);
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / TRAVEL_MS);
+      const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      const [x, y, z] = alongPath(points, eased);
+      // Lo sguardo si volta verso la stella di arrivo gia' nella prima parte
+      // del viaggio, cosi' la si vede avvicinarsi.
+      const turn = Math.min(1, eased * 1.7);
+      const k = turn * turn * (3 - 2 * turn);
+      fg.cameraPosition(
+        { x, y, z },
+        { x: from[0] + (to[0] - from[0]) * k, y: from[1] + (to[1] - from[1]) * k, z: from[2] + (to[2] - from[2]) * k },
+        0
+      );
+      if (t < 1) {
+        travelFrame.current = requestAnimationFrame(step);
+      } else {
+        travelFrame.current = 0;
+        setTraveling(false);
+        onArrive();
+      }
+    };
+    travelFrame.current = requestAnimationFrame(step);
+  }, [focusView]);
+
+  // Il visitatore fa una domanda: l'Oracolo trova la stella che raccoglie i
+  // pensieri piu' vicini, la nebulosa lo porta fin li' e la stella risponde.
   const askTheOracle = useCallback(async (text: string) => {
     const question = text.trim();
-    if (!question || asking) return;
+    if (!question || asking || traveling) return;
     setAsking(true);
     setSearchResultsVisible(false);
+    askInputRef.current?.blur();
     try {
       const reply = await askOracle(question);
-      if (!nodes.some((n) => n.id === reply.tag)) throw new Error("L'oracolo indica una stella che non c'e'");
-      setOracle({ tag: reply.tag, asker: 'visitor', question, answer: reply.answer, answering: false, entries: reply.entries, silent: false });
+      const target = nodes.find((n) => n.id === reply.tag);
+      if (!target) throw new Error("L'oracolo indica una stella che non c'e'");
+      const via = (reply.path ?? [])
+        .map((id) => nodes.find((n) => n.id === id))
+        .filter((n): n is GraphNode => n !== undefined);
+      const voice = { text: reply.answer, entries: reply.entries };
+      oracleTexts.current.set(`${question}|${reply.tag}`, voice);
+      setVisitorQuestion(question);
       setSearchTerm('');
-      selectTag(reply.tag);
+      closeDetail(false);
+      travelTo(target, via, () => {
+        setOracle({ tag: reply.tag, question, silent: false, ...voice });
+        selectTag(reply.tag, false);
+      });
     } catch (err) {
       // Senza Oracolo resta la ricerca per nome: si apre il primo tag trovato.
       const first = searchMatches[0];
@@ -616,21 +755,36 @@ export default function App() {
     } finally {
       setAsking(false);
     }
-  }, [asking, nodes, selectTag, searchMatches]);
+  }, [asking, traveling, nodes, closeDetail, travelTo, selectTag, searchMatches]);
 
-  // Chiede all'Oracolo la risposta alla domanda che ha fatto lui.
-  const askForAnswer = useCallback(async () => {
-    if (!oracle?.question || oracle.answering) return;
-    const { tag, question } = oracle;
-    const same = (current: OracleState | null) => current?.tag === tag && current.question === question;
-    setOracle({ ...oracle, answering: true });
-    try {
-      const reply = await fetchOracleAnswer(question, tag);
-      setOracle((current) => (same(current) ? { ...current!, answer: reply.answer, entries: reply.entries ?? [], answering: false } : current));
-    } catch {
-      setOracle((current) => (same(current) ? { ...current!, answering: false, silent: true } : current));
-    }
-  }, [oracle]);
+  // Dopo aver letto la risposta: un'altra domanda...
+  const askAnother = useCallback(() => {
+    setVisitorQuestion(null);
+    closeDetail();
+    loadSuggestions();
+    askInputRef.current?.focus();
+  }, [closeDetail, loadSuggestions]);
+
+  // ...oppure viaggiare nella nebulosa: la scheda si chiude e la camera
+  // arretra quanto basta a vedere la stella con le sue vicine, da puntare.
+  const wander = useCallback(() => {
+    const fg = graphRef.current;
+    const node = nodes.find((n) => n.id === selectedId);
+    closeDetail(false);
+    if (!fg || !node || node.x == null || node.y == null || node.z == null) return;
+    const cam = fg.camera().position;
+    const d: Vec3 = [cam.x - node.x, cam.y - node.y, cam.z - node.z];
+    const len = Math.hypot(d[0], d[1], d[2]) || 1;
+    fg.cameraPosition(
+      {
+        x: node.x + (d[0] / len) * WANDER_DISTANCE,
+        y: node.y + (d[1] / len) * WANDER_DISTANCE,
+        z: node.z + (d[2] / len) * WANDER_DISTANCE,
+      },
+      { x: node.x, y: node.y, z: node.z },
+      ZOOM_OUT_MS
+    );
+  }, [nodes, selectedId, closeDetail]);
 
   const submitSearch = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -677,6 +831,9 @@ export default function App() {
     if (hoveredNode.x == null || hoveredNode.y == null || hoveredNode.z == null) return false;
     return Math.hypot(node.x - hoveredNode.x, node.y - hoveredNode.y, node.z - hoveredNode.z) < 120;
   };
+
+  // L'Oracolo sta cercando la stella o la nebulosa ci sta portando li'.
+  const busy = asking || traveling;
 
   if (loading) {
     return (
@@ -775,7 +932,9 @@ export default function App() {
             if (selectedId) {
               if (node.id === selectedId) return base * 3;
               if (node.id === panelHoverId) return base * 3.2;
-              if (trailIds.has(node.id) || linkedIds.has(node.id)) return base * 2;
+              // Le collegate si accendono ma restano piu' piccole della stella
+              // aperta: e' lei che sta parlando.
+              if (trailIds.has(node.id) || linkedIds.has(node.id)) return base * 1.3;
               return base * 0.8;
             }
             if (trailIds.has(node.id)) return base * 2;
@@ -817,14 +976,23 @@ export default function App() {
         </div>
       </aside>
 
+      {suggestions.length > 0 && !selectedId && !busy && !shapeActive && !searchTerm.trim() && (
+        <div className="oracle-suggestions" aria-label="Domande suggerite">
+          {suggestions.map((question) => (
+            <button key={question} type="button" onClick={() => askTheOracle(question)}>{question}</button>
+          ))}
+        </div>
+      )}
+
       <form
-        className={`oracle-input-wrap${asking ? ' is-asking' : ''}${inviting ? ' is-inviting' : ''}`}
+        className={`oracle-input-wrap${busy ? ' is-asking' : ''}${inviting ? ' is-inviting' : ''}`}
         onSubmit={submitSearch}
       >
         <div className="input-icon"><Sparkles size={17} strokeWidth={1.5} /></div>
         <input
+          ref={askInputRef}
           value={searchTerm}
-          disabled={asking}
+          disabled={busy}
           onChange={(event) => {
             setSearchTerm(event.target.value);
             setSearchResultsVisible(true);
@@ -837,8 +1005,12 @@ export default function App() {
           placeholder="Fai una domanda all'Oracolo, o cerca un tag"
           aria-label="Fai una domanda all'Oracolo o cerca un tag"
         />
-        {asking && <span className="oracle-asking">l'Oracolo cerca tra le stelle…</span>}
-        {searchResultsVisible && !asking && searchTerm.trim() && (
+        {busy && (
+          <span className="oracle-asking">
+            {traveling ? 'la nebulosa ti porta dalla tua stella…' : "l'Oracolo cerca tra le stelle…"}
+          </span>
+        )}
+        {searchResultsVisible && !busy && searchTerm.trim() && (
           <ul className="search-results">
             <li>
               <button type="button" className="search-ask" onMouseDown={(e) => e.preventDefault()} onClick={() => askTheOracle(searchTerm)}>
@@ -878,8 +1050,8 @@ export default function App() {
         onSelectTag={selectTag}
         onTrailStep={backToTrailStep}
         onHoverTag={setPanelHoverId}
-        onOracleAnswer={askForAnswer}
-        onOracleAnother={() => oracle && loadOracleQuestion(oracle.tag, true)}
+        onAskAnother={askAnother}
+        onWander={wander}
       />
 
       {showAbout && (

@@ -66,6 +66,8 @@ export type OracleThought = {
 export type OracleReply = {
   question: string;
   tag: string;
+  // stelle affini da attraversare prima di arrivare a `tag`
+  path: string[];
   answer: string;
   entries: OracleThought[];
 };
@@ -97,16 +99,16 @@ export async function askOracle(question: string): Promise<OracleReply> {
   return res.json();
 }
 
-// Domanda che l'Oracolo fa a chi si ferma sulla stella `tag`, tenendo conto
-// delle tappe gia' fatte.
-export async function fetchOracleQuestion(tag: string, trail: string[]): Promise<string> {
-  const params = new URLSearchParams({ tag, trail: trail.join(',') });
-  const res = await fetch(`${API_BASE}api/oracle/question?${params}`);
+// Domande che chi visita potrebbe fare, da proporgli sopra la barra.
+export async function fetchSuggestions(): Promise<string[]> {
+  const res = await fetch(`${API_BASE}api/suggestions`);
   if (!res.ok) throw await oracleError(res);
-  return (await res.json()).question;
+  return (await res.json()).questions;
 }
 
-export async function fetchOracleAnswer(question: string, tag: string): Promise<OracleAnswer> {
+// Testo oracolare della stella `tag`: la risposta a `question` vista da quella
+// stella oppure, senza domanda, una sentenza sul suo tema.
+export async function fetchOracleAnswer(question: string | null, tag: string): Promise<OracleAnswer> {
   const res = await fetch(`${API_BASE}api/answer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
