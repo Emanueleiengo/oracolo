@@ -77,7 +77,14 @@ export type OracleAnswer = {
 
 async function oracleError(res: Response): Promise<Error> {
   const body = await res.json().catch(() => null);
-  return new Error(body?.error ?? "L'oracolo non risponde");
+  if (body?.error) return new Error(body.error);
+  // Un 404 senza spiegazione viene da un server avviato prima che l'Oracolo
+  // esistesse (o da un export statico, che non ha l'Oracolo).
+  return new Error(
+    res.status === 404
+      ? "Questo server non conosce ancora l'Oracolo: va riavviato"
+      : "L'oracolo non risponde"
+  );
 }
 
 export async function askOracle(question: string): Promise<OracleReply> {

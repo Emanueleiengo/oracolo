@@ -171,7 +171,8 @@ export default function App() {
   const [graphData, setGraphData] = useState<TagGraph>(emptyGraph);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [showIntro, setShowIntro] = useState(true);
+  // Presentazione dell'Oracolo: si apre dal pulsante "?" in alto a destra.
+  const [showAbout, setShowAbout] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResultsVisible, setSearchResultsVisible] = useState(false);
   // La barra in basso invita a fare una domanda finche' non la si usa.
@@ -270,7 +271,7 @@ export default function App() {
   // un ritmo suo. Agisce sulla sfera gia' disegnata dal grafo, senza
   // cambiarne colore o grandezza di base.
   useEffect(() => {
-    if (loading || showIntro) return;
+    if (loading) return;
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
     const rhythms = nodes.map((node) => ({
       node,
@@ -300,7 +301,7 @@ export default function App() {
         if (node.__threeObj?.material?.emissive) node.__threeObj.material.emissiveIntensity = 0;
       }
     };
-  }, [nodes, loading, showIntro]);
+  }, [nodes, loading]);
 
   // Luce soffusa della stella aperta: un alone (vedi .star-glow) che la
   // segue sullo schermo e cresce o si riduce con la distanza della camera.
@@ -400,9 +401,9 @@ export default function App() {
   }, [constellation, nodes, flyToOverview]);
 
   // ── Forze e navigazione: vanno impostate solo dopo che il grafo e' montato
-  // (cioe' a caricamento finito e a intro chiusa). ──
+  // (cioe' a caricamento finito). ──
   useEffect(() => {
-    if (loading || showIntro) return;
+    if (loading) return;
     const configure = () => {
       const fg = graphRef.current;
       if (!fg) return false;
@@ -435,7 +436,7 @@ export default function App() {
     if (configure()) return;
     const retry = window.setTimeout(configure, 150);
     return () => window.clearTimeout(retry);
-  }, [loading, showIntro, graph.nodes]);
+  }, [loading, graph.nodes]);
 
   // ── Search: live results as the user types, no submit needed ──
   const searchMatches = useMemo(() => {
@@ -645,8 +646,13 @@ export default function App() {
   // organizzano le stelle in una figura (premendo di nuovo lo stesso tasto
   // tornano libere).
   useEffect(() => {
-    if (loading || showIntro) return;
+    if (loading) return;
     const onKey = (event: KeyboardEvent) => {
+      // Con la presentazione aperta, Esc la chiude e gli altri tasti aspettano.
+      if (showAbout) {
+        if (event.key === 'Escape') setShowAbout(false);
+        return;
+      }
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
@@ -664,7 +670,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [closeDetail, activeShape, loading, showIntro]);
+  }, [closeDetail, activeShape, loading, showAbout]);
 
   const isNearHovered = (node: GraphNode) => {
     if (selectedId || !hoveredNode) return false;
@@ -673,28 +679,11 @@ export default function App() {
     return Math.hypot(node.x - hoveredNode.x, node.y - hoveredNode.y, node.z - hoveredNode.z) < 120;
   };
 
-  if (loading || showIntro) {
+  if (loading) {
     return (
-      <main
-        className="oracle-shell"
-        style={{ cursor: loading ? 'wait' : 'pointer' }}
-        onClick={() => {
-          if (!loading) {
-            setShowIntro(false);
-          }
-        }}
-      >
-        <div className="loading-screen flex flex-col items-center justify-center text-center px-6">
+      <main className="oracle-shell" style={{ cursor: 'wait' }}>
+        <div className="loading-screen">
           <div className="loading-orb" />
-          <p className="max-w-2xl mt-6" style={{ fontSize: '13px', lineHeight: '1.6' }}>
-            L'Oracolo è una mente collettiva open source che si dirama in mille frammenti incandescenti. È uno strumento, un archivio, un ambiente generativo, un agglomeratore di pensieri, testi, file, fonti e prende la forma di ciò da cui è composto. È una nebulosa mutaforma messa a disposizione del Viandante, che è uno stato d'animo: è il divergente, il ricercatore, l'esploratore; quello che si fa domande.
-          </p>
-
-          {!loading && (
-            <p className="pt-12 text-sm text-[#F3C58B] animate-pulse">
-              [ ADDENTRATI NELLA NEBULOSA ]
-            </p>
-          )}
         </div>
       </main>
     );
@@ -816,7 +805,7 @@ export default function App() {
         <div className="header-center"><span className="status-dot" />Frammento <span className="header-divider" /> {graphData.nodes.length} tag condivisi</div>
         <div className="header-actions">
           <a className="help-button" href={`${import.meta.env.BASE_URL}question.html`} aria-label="L'oracolo"><Sparkles size={16} strokeWidth={1.5} /></a>
-          <button className="help-button" type="button" aria-label="Help"><CircleHelp size={17} strokeWidth={1.5} /></button>
+          <button className="help-button" type="button" aria-label="Cos'è l'Oracolo" onClick={() => setShowAbout(true)}><CircleHelp size={17} strokeWidth={1.5} /></button>
         </div>
       </header>
 
@@ -894,6 +883,20 @@ export default function App() {
         onOracleAnswer={askForAnswer}
         onOracleAnother={() => oracle && loadOracleQuestion(oracle.tag, true)}
       />
+
+      {showAbout && (
+        <div className="about-overlay" role="dialog" aria-label="Cos'è l'Oracolo" onClick={() => setShowAbout(false)}>
+          <div className="loading-screen flex flex-col items-center justify-center text-center px-6">
+            <div className="loading-orb" />
+            <p className="max-w-2xl mt-6" style={{ fontSize: '13px', lineHeight: '1.6' }}>
+              L'Oracolo è una mente collettiva open source che si dirama in mille frammenti incandescenti. È uno strumento, un archivio, un ambiente generativo, un agglomeratore di pensieri, testi, file, fonti e prende la forma di ciò da cui è composto. È una nebulosa mutaforma messa a disposizione del Viandante, che è uno stato d'animo: è il divergente, il ricercatore, l'esploratore; quello che si fa domande.
+            </p>
+            <p className="pt-12 text-sm text-[#F3C58B] animate-pulse">
+              [ TORNA ALLA NEBULOSA ]
+            </p>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
