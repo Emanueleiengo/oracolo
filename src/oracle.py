@@ -8,9 +8,10 @@
 - `answer`: risposta enigmatica a una domanda, ispirata ai pensieri vicini.
 """
 
+import math
 import random
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import requests
 
@@ -115,15 +116,31 @@ def _nearest(question: str, entries: list[dict], count: int) -> list[tuple[float
     return scored[:count]
 
 
-def _choose_tag(scored: list[tuple[float, dict]]) -> str:
-    """La stella a cui indirizzare: il tag che pesa di piu' tra i pensieri
-    vicini (ognuno conta per quanto supera il meno vicino del gruppo)."""
+def _choose_tag(scored: list[tuple[float, dict]], entries: list[dict]) -> str:
+    """La stella a cui indirizzare: il tag piu' caratteristico dei pensieri
+    vicini alla domanda.
+
+    Ogni pensiero vicino da' peso ai suoi tag (per quanto supera il meno
+    vicino del gruppo), ma il peso di un tag conta meno quanto piu' il tag e'
+    diffuso in tutta la nebulosa: altrimenti un tag onnipresente (per esempio
+    "amore" su meta' delle entry) vincerebbe per qualunque domanda.
+    """
     floor = scored[-1][0]
     weight: dict[str, float] = defaultdict(float)
     for score, entry in scored:
         for tag in entry["tags"]:
             weight[tag] += (score - floor) + 0.02
-    return max(weight.items(), key=lambda item: item[1])[0]
+
+    spread = Counter(tag for entry in entries for tag in entry["tags"])
+    total = len(entries)
+    # La correzione attenua il vantaggio dei tag rarissimi: una stella con
+    # una sola frase e' specifica, ma e' un punto di partenza povero.
+    smoothing = max(3.0, total * 0.02)
+
+    def specificity(tag: str) -> float:
+        return math.log((total + smoothing) / (spread[tag] + smoothing))
+
+    return max(weight, key=lambda tag: weight[tag] * specificity(tag))
 
 
 def answer(question: str, tag: str | None = None) -> dict:
@@ -151,7 +168,7 @@ def ask(question: str) -> dict | None:
         return None
 
     scored = _nearest(question, entries, NEAREST)
-    tag = _choose_tag(scored)
+    tag = _choose_tag(scored, entries)
     near = [entry for _, entry in scored]
     # A chi ha chiesto si mostrano prima i pensieri della stella scelta.
     shown = sorted(near, key=lambda e: tag not in e["tags"])[:SHOWN]
