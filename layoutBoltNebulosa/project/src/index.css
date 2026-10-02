@@ -24,6 +24,9 @@ button { color: inherit; }
 .aurora-two { width: 480px; height: 500px; right: 18%; bottom: 4%; background: #526e6d; opacity: .13; }
 .graph-layer { position: absolute; inset: 0; z-index: 0; }
 .graph-layer canvas { outline: none; }
+/* Luce soffusa attorno alla stella aperta. Posizione e grandezza le imposta
+   App.tsx a ogni fotogramma; non intercetta i click. */
+.star-glow { position: absolute; left: 0; top: 0; width: 0; height: 0; border-radius: 50%; pointer-events: none; opacity: 0; transition: opacity .7s ease; mix-blend-mode: screen; will-change: transform, opacity; background: radial-gradient(circle, rgba(255,247,228,.5) 0%, rgba(255,240,208,.36) 24%, rgba(255,226,176,.14) 46%, rgba(255,214,150,0) 70%); }
 
 .topbar, .side-panel, .oracle-input-wrap, .bottom-caption, .footer-note { z-index: 2; position: absolute; }
 .topbar { top: 0; left: 0; right: 0; height: 92px; display: flex; align-items: center; justify-content: space-between; padding: 0 42px; border-bottom: 1px solid rgba(236,226,211,.12); background: linear-gradient(180deg, rgba(8,10,13,.88), rgba(8,10,13,.3)); }
@@ -167,4 +170,48 @@ h1 span { color: #dbab72; margin: 0 3px; }
 }
 @media (max-width: 430px) {
   .modal-card { padding: 26px 20px 22px; }
+}
+
+/* ── Pannello di dettaglio agganciato a destra (non modale) ──
+   Nessuno sfondo scuro e nessun blocco dei click: la nebulosa dietro
+   resta navigabile mentre la scheda e' aperta. */
+.detail-dock { position: absolute; z-index: 3; top: 116px; right: 28px; bottom: 124px; width: 380px; display: flex; flex-direction: column; animation: dockIn .35s ease;
+  /* Vetro: sfondo semitrasparente e sfocato, la nebulosa si intravede dietro.
+     Un velo piu' chiaro in alto e un bordo luminoso danno lo spessore. */
+  background: linear-gradient(160deg, rgba(255,255,255,.09), rgba(255,255,255,.02) 38%), rgba(16,18,22,.34);
+  border: 1px solid rgba(255,255,255,.16); border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 24px 70px rgba(0,0,0,.42);
+  -webkit-backdrop-filter: blur(22px) saturate(150%); backdrop-filter: blur(22px) saturate(150%); }
+.detail-dock-scroll { flex: 1; overflow-y: auto; padding: 26px 24px 22px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent; }
+.detail-dock .detail-title { padding-right: 36px; }
+/* Sul vetro il testo deve staccare di piu' che sullo sfondo pieno. */
+.detail-dock .detail-meta, .detail-dock .detail-connections { border-top-color: rgba(255,255,255,.14); }
+.detail-dock .detail-meta span, .detail-dock .detail-conn-heading { color: #a39b93; }
+.detail-dock .detail-meta strong { color: #e7dfd3; }
+.detail-dock .detail-entry { color: #d6cec4; background: rgba(255,255,255,.055); border-radius: 0 6px 6px 0; }
+.detail-dock .modal-close { border-color: rgba(255,255,255,.22); color: #b9b1a8; background: rgba(255,255,255,.05); }
+
+/* Viaggio: le tappe fatte finora, nello stesso azzurro delle stelle visitate. */
+.detail-trail { margin: 0 36px 20px 0; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,.14); }
+.detail-trail-heading { font: 8px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .1em; color: #a39b93; margin: 0 0 9px; }
+.detail-trail ol { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 2px; list-style: none; margin: 0; padding: 0; }
+.detail-trail li { display: flex; align-items: center; gap: 2px; color: rgba(95,224,255,.55); }
+.detail-trail-step { font: 11px/1 inherit; padding: 5px 9px; border-radius: 999px; border: 1px solid rgba(95,224,255,.35); background: rgba(95,224,255,.07); color: #9eeaff; cursor: pointer; transition: background .2s, border-color .2s, color .2s; }
+button.detail-trail-step:hover { background: rgba(95,224,255,.2); border-color: rgba(95,224,255,.7); color: #fff; }
+.detail-trail-step.is-current { border-color: rgba(255,255,255,.5); background: rgba(255,255,255,.14); color: #fff; cursor: default; }
+
+/* Tag collegati, ognuno con la frase che lo unisce al tag aperto. */
+.detail-bond-list { display: flex; flex-direction: column; gap: 8px; }
+.detail-bond { display: flex; flex-direction: column; gap: 6px; width: 100%; padding: 11px 12px; text-align: left; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: rgba(255,255,255,.04); color: inherit; cursor: pointer; transition: background .2s, border-color .2s; }
+.detail-bond:hover { background: rgba(255,213,138,.1); border-color: rgba(255,213,138,.45); }
+.detail-bond-name { display: flex; align-items: center; gap: 8px; color: #f0d9b0; font-size: 12px; }
+.detail-bond-name svg { margin-left: auto; color: #a39b93; }
+.detail-bond-quote { color: #c9c1b7; font-size: 11.5px; line-height: 1.55; font-style: italic; padding-left: 13px; }
+.detail-bond-quote::before { content: '\201C'; }
+.detail-bond-quote::after { content: '\201D'; }
+.detail-bond-more { font: 8px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .08em; color: #8f877f; padding-left: 13px; }
+@keyframes dockIn { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
+
+@media (max-width: 760px) {
+  .detail-dock { top: auto; left: 12px; right: 12px; bottom: 124px; width: auto; height: 40vh; }
 }

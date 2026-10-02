@@ -25,6 +25,9 @@ export type TagEntry = {
 export type RelatedTag = {
   name: string;
   weight: number;
+  // Frasi che contengono entrambi i tag (al massimo 3): il motivo del
+  // collegamento. Assente se il server non le fornisce.
+  entries?: { id: number; text: string }[];
 };
 
 export type TagDetail = {

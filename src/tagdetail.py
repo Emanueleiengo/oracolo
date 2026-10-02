@@ -15,10 +15,14 @@ def build_tag_detail(tag_name: str) -> dict | None:
         return None
 
     related_counts: Counter = Counter()
+    # Per ogni tag imparentato, le entry che contengono entrambi i tag:
+    # sono il motivo per cui i due sono collegati.
+    shared: dict[str, list[dict]] = {}
     for entry in matching:
         for tag in entry["tags"]:
             if tag != tag_name:
                 related_counts[tag] += 1
+                shared.setdefault(tag, []).append(entry)
 
     return {
         "name": tag_name,
@@ -26,5 +30,12 @@ def build_tag_detail(tag_name: str) -> dict | None:
         "entries": [
             {"id": e["id"], "text": e["text"], "likes": e["likes"]} for e in matching[:20]
         ],
-        "related": [{"name": n, "weight": w} for n, w in related_counts.most_common(12)],
+        "related": [
+            {
+                "name": n,
+                "weight": w,
+                "entries": [{"id": e["id"], "text": e["text"]} for e in shared[n][:3]],
+            }
+            for n, w in related_counts.most_common(12)
+        ],
     }
