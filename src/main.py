@@ -4,7 +4,7 @@ from pathlib import Path
 
 import schedule
 
-from src import config, seed, server, sync, tagging
+from src import config, db_local, embeddings, seed, server, sync, tagging
 from src.export_static import export_static
 from src.logging_utils import get_logger, setup_logging
 
@@ -19,6 +19,12 @@ def do_sync() -> None:
 def do_tag() -> None:
     n = tagging.tag_pending_entries()
     print(f"[tag] {n} entry taggate con Ollama")
+
+
+def do_embed() -> None:
+    entries = [e for e in db_local.get_entries_with_tags() if e["tags"]]
+    n = embeddings.ensure_entry_embeddings(entries)
+    print(f"[embed] {n} entry preparate per l'Oracolo (vettori di similarita')")
 
 
 def do_serve() -> None:
@@ -38,6 +44,7 @@ def do_export(args: argparse.Namespace) -> None:
 def do_pipeline() -> None:
     do_sync()
     do_tag()
+    do_embed()
 
 
 def run_loop() -> None:
@@ -58,7 +65,11 @@ def main() -> None:
 
     subparsers.add_parser("sync", help="Sincronizza le entry da MySQL a locale")
     subparsers.add_parser("tag", help="Tagga le entry non ancora processate")
-    subparsers.add_parser("pipeline", help="Esegue sync + tag una volta")
+    subparsers.add_parser(
+        "embed",
+        help="Prepara le entry per l'Oracolo (vettori di similarita'); altrimenti avviene alla prima domanda",
+    )
+    subparsers.add_parser("pipeline", help="Esegue sync + tag + embed una volta")
     subparsers.add_parser("run", help="Esegue la pipeline in loop, a intervalli")
     subparsers.add_parser(
         "serve",
@@ -87,6 +98,7 @@ def main() -> None:
     commands = {
         "sync": do_sync,
         "tag": do_tag,
+        "embed": do_embed,
         "pipeline": do_pipeline,
         "run": run_loop,
         "serve": do_serve,

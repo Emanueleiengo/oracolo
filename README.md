@@ -35,7 +35,8 @@ i dati (tag/entry) invece sono live, letti dal server Python ad ogni richiesta.
 ```bash
 python -m src.main sync      # scarica/aggiorna le entry dalla sorgente remota
 python -m src.main tag       # tagga le entry nuove/modificate via Ollama
-python -m src.main pipeline  # sync + tag, una volta
+python -m src.main embed     # prepara le entry per l'Oracolo (vettori di similarita')
+python -m src.main pipeline  # sync + tag + embed, una volta
 python -m src.main run       # come pipeline, ma in loop ogni SYNC_INTERVAL_MINUTES
 python -m src.main serve     # avvia il webserver locale (frontend + API)
 python -m src.main seed      # inserisce dati di prova gia' taggati (per testare la nebulosa)
