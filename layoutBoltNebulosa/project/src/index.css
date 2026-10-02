@@ -203,6 +203,13 @@ h1 span { color: #dbab72; margin: 0 3px; }
 button.detail-trail-step:hover { background: rgba(95,224,255,.2); border-color: rgba(95,224,255,.7); color: #fff; }
 .detail-trail-step.is-current { border-color: rgba(255,255,255,.5); background: rgba(255,255,255,.14); color: #fff; cursor: default; }
 
+/* Citazioni dai testi letti dall'Oracolo: sempre con autore e titolo. */
+.detail-source { display: block; margin-top: 5px; font: normal 9px/1.4 'DM Mono', monospace; letter-spacing: .04em; color: #b3865f; }
+.detail-source::before { content: '\2014\00a0'; }
+.detail-source em { font-style: italic; }
+.detail-dock .detail-entry.is-quote { border-left-color: rgba(255,213,138,.85); font-style: italic; }
+.detail-bond .detail-source { padding-left: 13px; margin-top: 0; }
+
 /* L'Oracolo nella scheda: la domanda (del visitatore o sua) e la risposta. */
 .detail-oracle { margin-top: 20px; padding: 16px 16px 14px; border: 1px solid rgba(255,213,138,.3); border-radius: 10px; background: linear-gradient(150deg, rgba(255,213,138,.1), rgba(255,213,138,.02) 60%); }
 .detail-oracle-heading { display: flex; align-items: center; gap: 6px; font: 8px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .14em; color: #e1b47f; margin: 0 0 12px; }

@@ -9,8 +9,14 @@
   suo tema.
 - `question_for_tag`: una domanda che l'Oracolo fa al visitatore fermo su
   una stella.
+
+Per rispondere l'Oracolo consulta anche i testi che ha letto (library.py):
+i passi piu' vicini alla domanda entrano nella sua materia, e le frasi che
+li rappresentano meglio vengono mostrate, citate alla lettera, con titolo e
+autore.
 """
 
+import heapq
 import json
 import math
 import random
@@ -20,7 +26,7 @@ from collections import Counter, defaultdict
 
 import requests
 
-from src import config, db_local, embeddings
+from src import config, db_local, embeddings, library
 from src.logging_utils import get_logger
 
 log = get_logger(__name__)
@@ -29,6 +35,15 @@ log = get_logger(__name__)
 # ispirare la risposta, e quanti mostrarne a chi ha chiesto.
 NEAREST = 8
 SHOWN = 3
+# Quanti passi dei testi letti far consultare all'Oracolo per una risposta,
+# e di quanti mostrare una citazione.
+READINGS = 3
+READINGS_SHOWN = 2
+READINGS_BLOCK = """
+Passi dei testi che hai letto, vicini a cio' che ti viene chiesto (sono \
+anch'essi tua materia: non citarli e non nominarne gli autori):
+{readings}
+"""
 # Quante volte riprovare se la domanda generata non rispetta le regole.
 QUESTION_ATTEMPTS = 3
 
@@ -39,7 +54,7 @@ rispondi come una sibilla, con un'immagine concreta e inattesa che lasci da pens
 Pensieri della nebulosa vicini alla domanda (sono la tua materia: prendine \
 un oggetto, un gesto o un luogo, senza copiarne le frasi):
 {thoughts}
-
+{readings}
 Domanda: "{question}"
 
 Rispondi in italiano con UNA SOLA frase breve (al massimo 16 parole), \
@@ -52,11 +67,11 @@ Chi ti visita si è fermato davanti alla stella che custodisce il tema "{tag}".
 
 Pensieri raccolti in questa stella:
 {thoughts}
-
+{readings}
 Pronuncia una sentenza da sibilla su questo tema. Regole:
 - in italiano, UNA SOLA frase breve (al massimo 16 parole), all'indicativo;
 - deve far sentire il tema "{tag}" senza nominarlo;
-- costruiscila attorno a un oggetto, un gesto o un luogo preso da uno dei pensieri sopra, senza copiarne la frase;
+- costruiscila attorno a un oggetto, un gesto o un luogo preso da uno dei pensieri o dei passi sopra, senza copiarne la frase;
 - parla a chi ti ascolta dandogli del tu, oppure in forma impersonale;
 - non spiegare e non dare consigli; niente domande, niente "forse", niente virgolette, nessuna premessa.
 
@@ -163,18 +178,59 @@ def _tagged_entries() -> list[dict]:
     return [e for e in db_local.get_entries_with_tags() if e["tags"]]
 
 
-def _nearest(question: str, entries: list[dict], count: int) -> list[tuple[float, dict]]:
-    """Le entry dal significato piu' vicino alla domanda, con la similarita'."""
+def _view(entry: dict) -> dict:
+    """Una entry come la riceve il sito: per le citazioni dai testi, `source`
+    ne riporta titolo e autore."""
+    return {"id": entry["id"], "text": entry["text"], "source": entry.get("source")}
+
+
+def _nearest(vector, entries: list[dict], count: int) -> list[tuple[float, dict]]:
+    """Le entry dal significato piu' vicino al vettore dato, con la similarita'."""
     embeddings.ensure_entry_embeddings(entries)
     vectors = embeddings.load_entry_vectors()
-    question_vector = embeddings.embed_texts([question])[0]
     scored = [
-        (embeddings.similarity(question_vector, vectors[e["id"]]), e)
+        (embeddings.similarity(vector, vectors[e["id"]]), e)
         for e in entries
         if e["id"] in vectors
     ]
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return scored[:count]
+
+
+def _consult(vector, already_shown: list[dict]) -> tuple[str, list[dict]]:
+    """Consulta i testi letti: ritorna i passi piu' vicini (come blocco per
+    il prompt) e, da mostrare, la frase che meglio risponde in ognuno dei
+    primi, citata alla lettera con titolo e autore."""
+    passages = embeddings.load_passages()
+    if not passages:
+        return "", []
+    near = heapq.nlargest(
+        READINGS, passages, key=lambda p: embeddings.similarity(vector, p["vector"])
+    )
+    block = READINGS_BLOCK.format(
+        readings="\n".join(f"- {' '.join(p['text'].split()[:80])}" for p in near)
+    )
+
+    candidates = [
+        (passage, sentence)
+        for passage in near[:READINGS_SHOWN]
+        for sentence in library.quotable_sentences(passage["text"])
+    ]
+    if not candidates:
+        return block, []
+    best: dict[int, tuple[float, str, dict]] = {}
+    vectors = embeddings.embed_texts([sentence for _, sentence in candidates])
+    for (passage, sentence), sentence_vector in zip(candidates, vectors):
+        score = embeddings.similarity(vector, sentence_vector)
+        if passage["id"] not in best or score > best[passage["id"]][0]:
+            best[passage["id"]] = (score, sentence, passage)
+    taken = {entry["text"] for entry in already_shown}
+    readings = [
+        {"text": sentence, "title": passage["title"], "author": passage["author"]}
+        for _, sentence, passage in sorted(best.values(), key=lambda item: item[0], reverse=True)
+        if sentence not in taken
+    ]
+    return block, readings
 
 
 def _rank_tags(scored: list[tuple[float, dict]], entries: list[dict]) -> list[str]:
@@ -212,18 +268,25 @@ def answer(question: str | None, tag: str | None = None) -> dict:
     if tag:
         entries = [e for e in entries if tag in e["tags"]] or entries
     if not entries:
-        return {"answer": SILENCE, "entries": []}
+        return {"answer": SILENCE, "entries": [], "readings": []}
 
     if question:
-        near = [entry for _, entry in _nearest(question, entries, NEAREST)]
-        prompt = ANSWER_PROMPT.format(thoughts=_thoughts(near), question=question)
+        vector = embeddings.embed_texts([question])[0]
+        near = [entry for _, entry in _nearest(vector, entries, NEAREST)]
+        block, readings = _consult(vector, near[:SHOWN])
+        prompt = ANSWER_PROMPT.format(thoughts=_thoughts(near), readings=block, question=question)
         text = _generate(prompt, 0.9)
     else:
         near = random.sample(entries, min(6, len(entries)))
-        text = _generate(VOICE_PROMPT.format(tag=tag, thoughts=_thoughts(near)), 0.8)
+        # Senza domanda si consultano i testi sul tema della stella.
+        vector = embeddings.embed_texts([f"{tag}. " + " ".join(e["text"] for e in near[:3])])[0]
+        block, readings = _consult(vector, near[:SHOWN])
+        prompt = VOICE_PROMPT.format(tag=tag, thoughts=_thoughts(near), readings=block)
+        text = _generate(prompt, 0.8)
     return {
         "answer": text or SILENCE,
-        "entries": [{"id": e["id"], "text": e["text"]} for e in near[:SHOWN]],
+        "entries": [_view(e) for e in near[:SHOWN]],
+        "readings": readings,
     }
 
 
@@ -306,115 +369,6 @@ def suggestions() -> list[str]:
     return shown[:SUGGESTIONS_SHOWN]
 
 
-def _rank_tags(scored: list[tuple[float, dict]], entries: list[dict]) -> list[str]:
-    """I tag dei pensieri vicini alla domanda, dal piu' caratteristico: il
-    primo e' la stella a cui indirizzare.
-
-    Ogni pensiero vicino da' peso ai suoi tag (per quanto supera il meno
-    vicino del gruppo), ma il peso di un tag conta meno quanto piu' il tag e'
-    diffuso in tutta la nebulosa: altrimenti un tag onnipresente (per esempio
-    "amore" su meta' delle entry) vincerebbe per qualunque domanda.
-    """
-    floor = scored[-1][0]
-    weight: dict[str, float] = defaultdict(float)
-    for score, entry in scored:
-        for tag in entry["tags"]:
-            weight[tag] += (score - floor) + 0.02
-
-    spread = Counter(tag for entry in entries for tag in entry["tags"])
-    total = len(entries)
-    # La correzione attenua il vantaggio dei tag rarissimi: una stella con
-    # una sola frase e' specifica, ma e' un punto di partenza povero.
-    smoothing = max(3.0, total * 0.02)
-
-    def specificity(tag: str) -> float:
-        return math.log((total + smoothing) / (spread[tag] + smoothing))
-
-    return sorted(weight, key=lambda tag: weight[tag] * specificity(tag), reverse=True)
-
-
-def answer(question: str | None, tag: str | None = None) -> dict:
-    """Testo oracolare. Con una domanda: la risposta, ispirata ai pensieri
-    piu' vicini (solo quelli della stella `tag`, se indicata). Senza
-    domanda: una sentenza sul tema della stella `tag`."""
-    entries = _tagged_entries()
-    if tag:
-        entries = [e for e in entries if tag in e["tags"]] or entries
-    if not entries:
-        return {"answer": SILENCE, "entries": []}
-
-    if question:
-        near = [entry for _, entry in _nearest(question, entries, NEAREST)]
-        prompt = ANSWER_PROMPT.format(thoughts=_thoughts(near), question=question)
-        text = _generate(prompt, 0.9)
-    else:
-        near = random.sample(entries, min(6, len(entries)))
-        text = _generate(VOICE_PROMPT.format(tag=tag, thoughts=_thoughts(near)), 0.8)
-    return {
-        "answer": text or SILENCE,
-        "entries": [{"id": e["id"], "text": e["text"]} for e in near[:SHOWN]],
-    }
-
-
-def _usable_suggestions(parsed) -> list[str]:
-    """Domande brevi, ben formate e che iniziano con parole diverse, tra
-    quelle generate."""
-    raw = parsed.get("questions") if isinstance(parsed, dict) else parsed
-    if not isinstance(raw, list):
-        return []
-    picked: list[str] = []
-    openings: set[str] = set()
-    for item in raw:
-        question = _clean(str(item))
-        words = question.split()
-        opening = words[0].lower() if words else ""
-        if not question.endswith("?") or not 2 <= len(words) <= 9 or opening in openings:
-            continue
-        openings.add(opening)
-        picked.append(question)
-    return picked
-
-
-def suggestions() -> list[str]:
-    """Alcune domande da proporre a chi entra nella nebulosa. Vengono
-    generate da Ollama a partire dai temi e riusate per qualche minuto; se
-    Ollama non risponde si propongono quelle di riserva."""
-    if time.time() - _suggestions["at"] > SUGGESTIONS_TTL or not _suggestions["pool"]:
-        entries = _tagged_entries()
-        try:
-            if not entries:
-                raise ValueError("nessuna entry taggata")
-            tags = sorted({tag for e in entries for tag in e["tags"]})
-            response = requests.post(
-                f"{config.OLLAMA_HOST}/api/generate",
-                json={
-                    "model": config.OLLAMA_TAG_MODEL,
-                    "prompt": SUGGESTIONS_PROMPT.format(
-                        tags=", ".join(random.sample(tags, min(40, len(tags)))),
-                        samples=_thoughts(random.sample(entries, min(16, len(entries)))),
-                        count=SUGGESTIONS_POOL,
-                    ),
-                    "stream": False,
-                    "format": "json",
-                    "options": {"temperature": 0.9},
-                },
-                timeout=config.OLLAMA_TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            pool = _usable_suggestions(json.loads(response.json()["response"]))
-        except (requests.RequestException, ValueError, KeyError) as error:
-            log.warning("Domande suggerite non generate (%s): uso quelle di riserva", error)
-            pool = []
-        _suggestions["pool"] = pool
-        # Se la generazione fallisce si riprova tra un minuto, non a ogni richiesta.
-        _suggestions["at"] = time.time() if pool else time.time() - SUGGESTIONS_TTL + 60
-
-    pool = _suggestions["pool"]
-    if len(pool) < SUGGESTIONS_SHOWN:
-        pool = pool + [q for q in FALLBACK_SUGGESTIONS if q not in pool]
-    return random.sample(pool, SUGGESTIONS_SHOWN)
-
-
 def ask(question: str) -> dict | None:
     """Indirizza la domanda a una stella e risponde. None se la nebulosa e'
     vuota (nessuna entry taggata)."""
@@ -423,7 +377,8 @@ def ask(question: str) -> dict | None:
         log.warning("Nessuna entry taggata: l'Oracolo non ha stelle a cui indirizzare")
         return None
 
-    scored = _nearest(question, entries, NEAREST)
+    vector = embeddings.embed_texts([question])[0]
+    scored = _nearest(vector, entries, NEAREST)
     ranked = _rank_tags(scored, entries)
     tag = ranked[0]
     near = [entry for _, entry in scored]
@@ -431,14 +386,18 @@ def ask(question: str) -> dict | None:
     shown = sorted(near, key=lambda e: tag not in e["tags"])[:SHOWN]
     log.info("Domanda %r -> stella '%s'", question, tag)
 
-    text = _generate(ANSWER_PROMPT.format(thoughts=_thoughts(near), question=question), 0.9)
+    block, readings = _consult(vector, shown)
+    prompt = ANSWER_PROMPT.format(thoughts=_thoughts(near), readings=block, question=question)
+    text = _generate(prompt, 0.9)
     return {
         "question": question,
         "tag": tag,
         # stelle affini da attraversare prima di arrivare, dalla meno vicina
         "path": ranked[1:3][::-1],
         "answer": text or SILENCE,
-        "entries": [{"id": e["id"], "text": e["text"]} for e in shown],
+        "entries": [_view(e) for e in shown],
+        # citazioni dai testi letti, con titolo e autore
+        "readings": readings,
     }
 
 

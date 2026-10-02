@@ -36,6 +36,7 @@ i dati (tag/entry) invece sono live, letti dal server Python ad ogni richiesta.
 python -m src.main sync      # scarica/aggiorna le entry dalla sorgente remota
 python -m src.main tag       # tagga le entry nuove/modificate via Ollama
 python -m src.main embed     # prepara le entry per l'Oracolo (vettori di similarita')
+python -m src.main ingest    # fa leggere all'Oracolo i PDF e i TXT nella cartella testi/
 python -m src.main pipeline  # sync + tag + embed, una volta
 python -m src.main run       # come pipeline, ma in loop ogni SYNC_INTERVAL_MINUTES
 python -m src.main serve     # avvia il webserver locale (frontend + API)
@@ -68,6 +69,32 @@ Apri `http://localhost:8000/question.html` per "l'Oracolo": una domanda
 generata al volo (serve Ollama raggiungibile), con un pulsante per rerollare
 tra quelle gia' ricevute e uno per chiedere una risposta criptica. Raggiungibile
 anche dal pulsante a forma di stella nell'header della Nebulosa.
+
+## Testi letti dall'Oracolo
+
+Oltre ai pensieri delle persone, l'Oracolo puo' leggere libri, tesi e
+interviste. Metti i file (PDF o TXT) nella cartella `testi/` e lancia
+`python -m src.main ingest`:
+
+- **tutto** il testo viene diviso in passi e finisce in una biblioteca che
+  l'Oracolo consulta quando risponde;
+- una **selezione** dei passi piu' rappresentativi (40 per testo, vedi
+  `LIBRARY_STARS_PER_SOURCE` o `--stars`) entra nella nebulosa: da ognuno si
+  prende una frase, citata alla lettera, con i suoi tag. I tag vengono scelti
+  di preferenza tra i temi gia' presenti, cosi' la citazione si collega alle
+  stelle esistenti; altrimenti nasce una stella nuova.
+
+Le citazioni mostrano sempre autore e titolo. Si ricavano dal nome del file
+(`Autore - Titolo.pdf`) oppure da `testi/fonti.json`:
+
+```json
+[{"file": "calvino.pdf", "title": "Le citta' invisibili", "author": "Italo Calvino", "kind": "libro"}]
+```
+
+I file dei testi non sono versionati (sono opere altrui): in git entra solo
+`fonti.json`. `ingest --list` elenca i testi letti, `ingest --forget <file>`
+ne toglie uno. I PDF fatti di sole immagini scansionate non contengono testo
+e vanno prima convertiti.
 
 ## Note
 

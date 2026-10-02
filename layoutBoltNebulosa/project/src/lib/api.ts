@@ -16,10 +16,18 @@ export type TagGraph = {
   links: TagLink[];
 };
 
+// Testo (libro, tesi, intervista) da cui e' tratta una citazione.
+export type TextSource = {
+  title: string;
+  author: string;
+};
+
 export type TagEntry = {
   id: number;
   text: string;
   likes: number;
+  // presente solo per le citazioni tratte da un testo letto dall'Oracolo
+  source?: TextSource | null;
 };
 
 export type RelatedTag = {
@@ -27,7 +35,7 @@ export type RelatedTag = {
   weight: number;
   // Frasi che contengono entrambi i tag (al massimo 3): il motivo del
   // collegamento. Assente se il server non le fornisce.
-  entries?: { id: number; text: string }[];
+  entries?: { id: number; text: string; source?: TextSource | null }[];
 };
 
 export type TagDetail = {
@@ -59,6 +67,15 @@ export async function fetchTagDetail(name: string): Promise<TagDetail> {
 export type OracleThought = {
   id: number;
   text: string;
+  source?: TextSource | null;
+};
+
+// Frase di un testo che l'Oracolo ha consultato per rispondere, citata alla
+// lettera.
+export type OracleReading = {
+  text: string;
+  title: string;
+  author: string;
 };
 
 // Risposta a una domanda scritta dal visitatore: la stella a cui viene
@@ -70,11 +87,13 @@ export type OracleReply = {
   path: string[];
   answer: string;
   entries: OracleThought[];
+  readings?: OracleReading[];
 };
 
 export type OracleAnswer = {
   answer: string;
   entries?: OracleThought[];
+  readings?: OracleReading[];
 };
 
 async function oracleError(res: Response): Promise<Error> {

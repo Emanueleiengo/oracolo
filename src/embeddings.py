@@ -25,7 +25,7 @@ def _text_hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
-def _normalized(values) -> array:
+def normalized(values) -> array:
     """Vettore di lunghezza 1: cosi' la similarita' e' un semplice prodotto."""
     norm = math.sqrt(sum(v * v for v in values)) or 1.0
     return array("f", (v / norm for v in values))
@@ -44,7 +44,7 @@ def embed_texts(texts: list[str]) -> list[array]:
             timeout=config.OLLAMA_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
-        vectors.extend(_normalized(v) for v in response.json()["embeddings"])
+        vectors.extend(normalized(v) for v in response.json()["embeddings"])
     return vectors
 
 
@@ -104,3 +104,27 @@ def similarity(a: array, b: array) -> float:
     if hasattr(math, "sumprod"):  # Python 3.12+, molto piu' veloce
         return math.sumprod(a, b)
     return sum(x * y for x, y in zip(a, b))
+
+
+# I passi dei testi sono molti e non cambiano spesso: si tengono in memoria,
+# e si rileggono dal DB solo quando la biblioteca cambia.
+_passages: dict = {"signature": None, "items": []}
+
+
+def load_passages() -> list[dict]:
+    """I passi della biblioteca con vettore, titolo e autore del testo."""
+    signature = db_local.get_passages_signature()
+    if _passages["signature"] != signature:
+        items = []
+        for row in db_local.get_passages():
+            if row["model"] != config.OLLAMA_EMBED_MODEL:
+                continue
+            vector = array("f")
+            vector.frombytes(row["vector"])
+            items.append(
+                {"id": row["id"], "text": row["text"], "title": row["title"],
+                 "author": row["author"], "vector": vector}
+            )
+        _passages["items"] = items
+        _passages["signature"] = signature
+    return _passages["items"]

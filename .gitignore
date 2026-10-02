@@ -7,3 +7,8 @@ __pycache__/
 .venv/
 *:Zone.Identifier
 /export/
+
+# Testi dati in lettura all'Oracolo: restano fuori da git (sono opere altrui),
+# si versiona solo l'elenco con titoli e autori.
+/testi/*
+!/testi/fonti.json

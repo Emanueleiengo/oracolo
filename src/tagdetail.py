@@ -27,14 +27,19 @@ def build_tag_detail(tag_name: str) -> dict | None:
     return {
         "name": tag_name,
         "count": len(matching),
+        # `source` (titolo e autore) accompagna le citazioni tratte dai testi
         "entries": [
-            {"id": e["id"], "text": e["text"], "likes": e["likes"]} for e in matching[:20]
+            {"id": e["id"], "text": e["text"], "likes": e["likes"], "source": e["source"]}
+            for e in matching[:20]
         ],
         "related": [
             {
                 "name": n,
                 "weight": w,
-                "entries": [{"id": e["id"], "text": e["text"]} for e in shared[n][:3]],
+                "entries": [
+                    {"id": e["id"], "text": e["text"], "source": e["source"]}
+                    for e in shared[n][:3]
+                ],
             }
             for n, w in related_counts.most_common(12)
         ],

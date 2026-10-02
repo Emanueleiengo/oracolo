@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowUpRight, ChevronRight, Hash, Sparkles, X } from 'lucide-react';
-import type { OracleThought, TagDetail } from '@/lib/api';
+import type { OracleReading, OracleThought, TagDetail, TextSource } from '@/lib/api';
 
 // Cosa dice l'Oracolo sulla stella aperta.
 export type OracleState = {
@@ -13,9 +13,17 @@ export type OracleState = {
   text: string | null;
   // pensieri della nebulosa a cui si e' ispirato
   entries: OracleThought[];
+  // frasi dei testi che ha consultato, citate con titolo e autore
+  readings: OracleReading[];
   // l'Oracolo non e' raggiungibile: il riquadro non si mostra
   silent: boolean;
 };
+
+// Da dove viene una citazione: autore e titolo del testo.
+function Attribution({ source }: { source?: TextSource | null }) {
+  if (!source) return null;
+  return <cite className="detail-source">{source.author}, <em>{source.title}</em></cite>;
+}
 
 // Il testo dell'Oracolo compare una parola alla volta, come se lo stesse
 // pronunciando in quel momento.
@@ -137,7 +145,15 @@ export default function TagDetailPanel({
               <div className="detail-oracle-sources">
                 <p className="detail-oracle-label">Pensieri che ha ascoltato</p>
                 {voice.entries.map((entry) => (
-                  <p key={entry.id}>{entry.text}</p>
+                  <p key={entry.id}>{entry.text}<Attribution source={entry.source} /></p>
+                ))}
+              </div>
+            )}
+            {voice.text && voice.readings.length > 0 && (
+              <div className="detail-oracle-sources">
+                <p className="detail-oracle-label">Dai testi che ha letto</p>
+                {voice.readings.map((reading) => (
+                  <p key={`${reading.title}-${reading.text}`}>{reading.text}<Attribution source={reading} /></p>
                 ))}
               </div>
             )}
@@ -151,7 +167,10 @@ export default function TagDetailPanel({
         {tag.entries.length > 0 && (
           <div className="detail-entries">
             {tag.entries.map((entry) => (
-              <p className="detail-entry" key={entry.id}>{entry.text}</p>
+              <p className={`detail-entry${entry.source ? ' is-quote' : ''}`} key={entry.id}>
+                {entry.text}
+                <Attribution source={entry.source} />
+              </p>
             ))}
           </div>
         )}
@@ -172,6 +191,7 @@ export default function TagDetailPanel({
                       <ArrowUpRight size={12} />
                     </span>
                     {shared && <span className="detail-bond-quote">{shared.text}</span>}
+                    {shared?.source && <Attribution source={shared.source} />}
                     {shared && others > 0 && (
                       <span className="detail-bond-more">
                         {others === 1 ? 'e un\'altra frase in comune' : `e altre ${others} frasi in comune`}

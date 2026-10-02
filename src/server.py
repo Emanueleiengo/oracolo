@@ -44,6 +44,8 @@ def _health() -> dict:
     try:
         db_local.init_db()
         status["entry_con_vettore"] = len(db_local.get_entry_embeddings())
+        status["testi_letti"] = len(db_local.get_sources())
+        status["passi_in_biblioteca"] = db_local.get_passages_signature()[0]
         response = requests.get(f"{config.OLLAMA_HOST}/api/tags", timeout=10)
         response.raise_for_status()
         models = [m["name"] for m in response.json().get("models", [])]

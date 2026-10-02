@@ -245,7 +245,7 @@ export default function App() {
   const shapeWasActive = useRef(false);
   // Testi gia' detti dall'Oracolo, per domanda e stella: riaprendo una
   // stella si ritrova lo stesso.
-  const oracleTexts = useRef(new Map<string, Pick<OracleState, 'text' | 'entries'>>());
+  const oracleTexts = useRef(new Map<string, Pick<OracleState, 'text' | 'entries' | 'readings'>>());
   const askInputRef = useRef<HTMLInputElement>(null);
   // Fotogramma in corso del viaggio della camera (0 = nessun viaggio).
   const travelFrame = useRef(0);
@@ -645,12 +645,12 @@ export default function App() {
   const loadOracleText = useCallback(async (tag: string, question: string | null) => {
     const key = `${question ?? ''}|${tag}`;
     const known = oracleTexts.current.get(key);
-    setOracle({ tag, question, text: known?.text ?? null, entries: known?.entries ?? [], silent: false });
+    setOracle({ tag, question, text: known?.text ?? null, entries: known?.entries ?? [], readings: known?.readings ?? [], silent: false });
     if (known) return;
     const stillHere = (current: OracleState | null) => current?.tag === tag && current.question === question;
     try {
       const reply = await fetchOracleAnswer(question, tag);
-      const voice = { text: reply.answer, entries: reply.entries ?? [] };
+      const voice = { text: reply.answer, entries: reply.entries ?? [], readings: reply.readings ?? [] };
       oracleTexts.current.set(key, voice);
       setOracle((current) => (stillHere(current) ? { ...current!, ...voice } : current));
     } catch {
@@ -738,7 +738,7 @@ export default function App() {
       const via = (reply.path ?? [])
         .map((id) => nodes.find((n) => n.id === id))
         .filter((n): n is GraphNode => n !== undefined);
-      const voice = { text: reply.answer, entries: reply.entries };
+      const voice = { text: reply.answer, entries: reply.entries, readings: reply.readings ?? [] };
       oracleTexts.current.set(`${question}|${reply.tag}`, voice);
       setVisitorQuestion(question);
       setSearchTerm('');

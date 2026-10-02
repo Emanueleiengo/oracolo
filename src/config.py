@@ -46,6 +46,12 @@ OLLAMA_HOST = _ollama_url(os.getenv("OLLAMA_HOST") or "http://localhost:11434")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
 OLLAMA_TAG_MODEL = os.getenv("OLLAMA_TAG_MODEL", "llama3.1")
 MAX_TAGS_PER_ENTRY = _int("MAX_TAGS_PER_ENTRY", 3)
+
+# --- Testi letti dall'Oracolo (libri, tesi, interviste) ---
+# Cartella in cui mettere i PDF e i TXT, e quante citazioni di ogni testo
+# entrano nella nebulosa come stelle (tutto il resto resta consultabile).
+TEXTS_DIR = os.getenv("TEXTS_DIR", "testi")
+LIBRARY_STARS_PER_SOURCE = _int("LIBRARY_STARS_PER_SOURCE", 40)
 QUESTIONS_COUNT = _int("QUESTIONS_COUNT", 6)
 
 # --- Webserver locale (serve il frontend "Nebulosa" + /api/graph, /api/tag/<nome>) ---
