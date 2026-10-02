@@ -80,16 +80,25 @@ interviste. Metti i file (PDF o TXT) nella cartella `testi/` e lancia
   l'Oracolo consulta quando risponde;
 - una **selezione** dei passi piu' rappresentativi (40 per testo, vedi
   `LIBRARY_STARS_PER_SOURCE` o `--stars`) entra nella nebulosa: da ognuno si
-  prende una frase, citata alla lettera, con i suoi tag. I tag vengono scelti
-  di preferenza tra i temi gia' presenti, cosi' la citazione si collega alle
-  stelle esistenti; altrimenti nasce una stella nuova.
+  prende una frase, citata alla lettera, che regga da sola come pensiero. I
+  suoi tag vengono scelti tra i temi gia' presenti piu' vicini per
+  significato, cosi' la citazione si collega alle stelle esistenti; se nessun
+  tema e' abbastanza vicino nasce una stella nuova (vedi `src/themes.py`).
 
 Le citazioni mostrano sempre autore e titolo. Si ricavano dal nome del file
 (`Autore - Titolo.pdf`) oppure da `testi/fonti.json`:
 
 ```json
-[{"file": "calvino.pdf", "title": "Le citta' invisibili", "author": "Italo Calvino", "kind": "libro"}]
+[{"file": "calvino.txt", "title": "Le citta' invisibili", "author": "Italo Calvino",
+  "kind": "libro", "lines": [[45, 86], [1088, 2340]]}]
 ```
+
+Campi facoltativi: `pages` (PDF) o `lines` (TXT) con gli intervalli da
+leggere, per lasciare fuori indici, note editoriali e bibliografie che non
+sono dell'autore; `stars`; `"kind": "tesi"` (non cita le frasi tra
+virgolette, che in una tesi sono di altri autori); `"format": "interviste"`
+per un file che raccoglie piu' interviste trascritte: ogni intervistato
+diventa un autore, e contano solo le sue risposte.
 
 I file dei testi non sono versionati (sono opere altrui): in git entra solo
 `fonti.json`. `ingest --list` elenca i testi letti, `ingest --forget <file>`

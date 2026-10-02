@@ -1,0 +1,30 @@
+[
+  {
+    "file": "Claudia_Bianchi_tesi.pdf",
+    "title": "Ekacene. Come quando deve piovere ma nessuno sa il momento",
+    "author": "Claudia Bianchi",
+    "kind": "tesi",
+    "pages": [[5, 64]]
+  },
+  {
+    "file": "INTERVISTE FLIP.txt",
+    "format": "interviste",
+    "title": "Intervista al Festival FLIP",
+    "kind": "intervista",
+    "stars": 2
+  },
+  {
+    "file": "Italo Calvino - Le città invisibili .txt",
+    "title": "Le città invisibili",
+    "author": "Italo Calvino",
+    "kind": "libro",
+    "lines": [[45, 86], [1088, 2340]]
+  },
+  {
+    "file": "Succede_sempre_qualcosa_di_meraviglioso_Gianluca_Gotto_z_library.pdf",
+    "title": "Succede sempre qualcosa di meraviglioso",
+    "author": "Gianluca Gotto",
+    "kind": "libro",
+    "pages": [[8, 375]]
+  }
+]

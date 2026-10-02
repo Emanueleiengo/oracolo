@@ -10,9 +10,7 @@ import hashlib
 import math
 from array import array
 
-import requests
-
-from src import config, db_local
+from src import config, db_local, ollama
 from src.logging_utils import get_logger
 
 log = get_logger(__name__)
@@ -21,7 +19,7 @@ log = get_logger(__name__)
 BATCH_SIZE = 32
 
 
-def _text_hash(text: str) -> str:
+def text_hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
@@ -35,16 +33,11 @@ def embed_texts(texts: list[str]) -> list[array]:
     """Chiede a Ollama i vettori (normalizzati) di una lista di testi."""
     vectors: list[array] = []
     for start in range(0, len(texts), BATCH_SIZE):
-        response = requests.post(
-            f"{config.OLLAMA_HOST}/api/embed",
-            json={
-                "model": config.OLLAMA_EMBED_MODEL,
-                "input": texts[start : start + BATCH_SIZE],
-            },
-            timeout=config.OLLAMA_TIMEOUT_SECONDS,
+        reply = ollama.post(
+            "/api/embed",
+            {"model": config.OLLAMA_EMBED_MODEL, "input": texts[start : start + BATCH_SIZE]},
         )
-        response.raise_for_status()
-        vectors.extend(normalized(v) for v in response.json()["embeddings"])
+        vectors.extend(normalized(v) for v in reply["embeddings"])
     return vectors
 
 
@@ -60,7 +53,7 @@ def ensure_entry_embeddings(entries: list[dict]) -> int:
     pending = [
         e
         for e in entries
-        if known.get(e["id"]) != (config.OLLAMA_EMBED_MODEL, _text_hash(e["text"]))
+        if known.get(e["id"]) != (config.OLLAMA_EMBED_MODEL, text_hash(e["text"]))
     ]
     if not pending:
         return 0
@@ -77,7 +70,7 @@ def ensure_entry_embeddings(entries: list[dict]) -> int:
                 {
                     "entry_id": e["id"],
                     "model": config.OLLAMA_EMBED_MODEL,
-                    "text_hash": _text_hash(e["text"]),
+                    "text_hash": text_hash(e["text"]),
                     "vector": vector.tobytes(),
                 }
                 for e, vector in zip(batch, vectors)
@@ -123,7 +116,7 @@ def load_passages() -> list[dict]:
             vector.frombytes(row["vector"])
             items.append(
                 {"id": row["id"], "text": row["text"], "title": row["title"],
-                 "author": row["author"], "vector": vector}
+                 "author": row["author"], "kind": row["kind"], "vector": vector}
             )
         _passages["items"] = items
         _passages["signature"] = signature

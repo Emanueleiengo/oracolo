@@ -1,5 +1,4 @@
 import json
-from difflib import get_close_matches
 
 import requests
 
@@ -15,25 +14,6 @@ Rispondi SOLO con un oggetto JSON con questa forma esatta, senza altro testo:
 
 Testo:
 \"\"\"{text}\"\"\"
-"""
-
-
-FRAGMENT_TAG_PROMPT = """Una frase tratta da un libro sta per entrare in una nebulosa di pensieri, \
-dove ogni tema e' una stella. Assegnale da 1 a {max_tags} temi (una o due parole ciascuno).
-
-Temi gia' presenti nella nebulosa: {vocabulary}
-
-Scegli di preferenza tra i temi gia' presenti, scritti esattamente cosi': collegano la frase \
-alle stelle che esistono. Aggiungi un tema nuovo solo se nessuno di quelli elencati descrive \
-bene la frase.
-Rispondi SOLO con un oggetto JSON con questa forma esatta, senza altro testo:
-{{"tags": ["amore", "gioco"]}}
-
-Frase:
-\"\"\"{text}\"\"\"
-
-Passo da cui e' tratta (solo per capirne il senso):
-\"\"\"{context}\"\"\"
 """
 
 
@@ -82,44 +62,6 @@ def _ask_ollama_for_tags(text: str) -> list[str]:
     if not tags:
         log.warning("Nessun tag estraibile dalla risposta di Ollama: %r", parsed)
     return tags[: config.MAX_TAGS_PER_ENTRY]
-
-
-def tags_for_fragment(text: str, context: str, vocabulary: list[str]) -> list[str]:
-    """Tag per una citazione tratta da un testo, scelti di preferenza tra i
-    temi gia' presenti nella nebulosa (`vocabulary`)."""
-    if not vocabulary:
-        return _ask_ollama_for_tags(text)
-    response = requests.post(
-        f"{config.OLLAMA_HOST}/api/generate",
-        json={
-            "model": config.OLLAMA_TAG_MODEL,
-            "prompt": FRAGMENT_TAG_PROMPT.format(
-                text=text,
-                context=context,
-                vocabulary=", ".join(vocabulary),
-                max_tags=config.MAX_TAGS_PER_ENTRY,
-            ),
-            "stream": False,
-            "format": "json",
-        },
-        timeout=config.OLLAMA_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
-    try:
-        tags = _extract_tags(json.loads(response.json()["response"]))
-    except json.JSONDecodeError:
-        return []
-    chosen: list[str] = []
-    for tag in (t.strip().lower() for t in tags):
-        if not tag:
-            continue
-        # Un tema quasi identico a uno gia' presente ("mar" per "mare") e'
-        # quello: non deve nascere una stella doppione.
-        if tag not in vocabulary:
-            tag = next(iter(get_close_matches(tag, vocabulary, n=1, cutoff=0.85)), tag)
-        if tag not in chosen:
-            chosen.append(tag)
-    return chosen[: config.MAX_TAGS_PER_ENTRY]
 
 
 def tag_pending_entries() -> int:

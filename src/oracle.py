@@ -214,7 +214,7 @@ def _consult(vector, already_shown: list[dict]) -> tuple[str, list[dict]]:
     candidates = [
         (passage, sentence)
         for passage in near[:READINGS_SHOWN]
-        for sentence in library.quotable_sentences(passage["text"])
+        for sentence in library.quotable_sentences(passage["text"], passage["kind"])
     ]
     if not candidates:
         return block, []

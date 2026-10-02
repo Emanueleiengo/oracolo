@@ -8,7 +8,7 @@ Ogni testo messo nella cartella `testi/` viene letto e diviso in passi.
   ognuno si prende una frase, citata alla lettera, che diventa una entry con
   i suoi tag (scelti di preferenza tra i temi gia' presenti, cosi' si
   creano collegamenti con le stelle esistenti; altrimenti nasce una stella
-  nuova). Le citazioni portano sempre titolo e autore.
+  nuova: vedi themes.py). Le citazioni portano sempre titolo e autore.
 
 Le frasi mostrate non vengono mai riscritte dall'IA: sono attribuite a un
 autore, quindi devono essere parole sue.
@@ -23,12 +23,15 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from src import config, db_local, embeddings, tagging
+from src import config, db_local, embeddings, themes
 from src.logging_utils import get_logger
 
 log = get_logger(__name__)
 
 MANIFEST_NAME = "fonti.json"
+# Versione del modo in cui i testi vengono letti e taggati: cambiandola, al
+# prossimo `ingest` tutti i testi vengono riletti con il metodo nuovo.
+INGEST_VERSION = 4
 EXTENSIONS = {".pdf", ".txt"}
 UNKNOWN_AUTHOR = "Autore sconosciuto"
 
@@ -60,25 +63,61 @@ _APPARATUS = re.compile(
 # un'intestazione tipica.
 _HEADING_START = re.compile(
     r"[\"«“‘]?(?:[A-ZÀ-Þ]{2,}\s+[A-ZÀ-Þ]{2,}"
+    r"|(?:[IVXLCDM]{1,6}|\d{1,3})\.?\s+[\"«“‘]?[A-ZÀ-Þ]"  # numero di capitolo
     r"|(?:Capitolo|Parte|Sezione|Paragrafo|Introduzione|Premessa|Prefazione|Conclusion[ei]"
     r"|Appendice|Bibliografia|Indice|Nota|Abstract|Sommario)\b)"
 )
 
 
+# Legature tipografiche che i PDF restituiscono come un carattere solo.
+_LIGATURES = {"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl"}
+
+
 # ── Lettura dei file ──
 
-def _read_pages(path: Path) -> list[str]:
-    """Il testo del file, una stringa per pagina (un TXT e' una sola pagina)."""
-    if path.suffix.lower() == ".pdf":
-        reader = PdfReader(str(path))
-        return [page.extract_text() or "" for page in reader.pages]
+def _pdf_page_text(page) -> str:
+    # La lettura "layout" rispetta la posizione dei caratteri: evita gli
+    # spazi finti dentro le parole che la lettura semplice mette attorno alle
+    # legature tipografiche ("de finisci"). Se fallisce si usa quella semplice.
+    try:
+        text = page.extract_text(extraction_mode="layout") or ""
+    except Exception:  # noqa: BLE001 - dipende da come e' fatto il PDF
+        text = ""
+    return text if text.strip() else (page.extract_text() or "")
+
+
+def _read_txt(path: Path) -> str:
     raw = path.read_bytes()
     for encoding in ("utf-8-sig", "utf-8", "cp1252"):
         try:
-            return [raw.decode(encoding)]
+            return raw.decode(encoding)
         except UnicodeDecodeError:
             continue
-    return [raw.decode("latin-1")]
+    return raw.decode("latin-1")
+
+
+def _in_ranges(number: int, ranges: list[list[int]] | None) -> bool:
+    return not ranges or any(first <= number <= last for first, last in ranges)
+
+
+def _read_pages(path: Path, pages: list[list[int]] | None = None, lines: list[list[int]] | None = None) -> list[str]:
+    """Il testo del file, una stringa per pagina (un TXT e' una sola pagina).
+    `pages` (per i PDF) e `lines` (per i TXT) limitano la lettura a quegli
+    intervalli, contati da 1 ed estremi inclusi: servono a lasciare fuori
+    indici, note editoriali, bibliografie."""
+    if path.suffix.lower() == ".pdf":
+        reader = PdfReader(str(path))
+        return [
+            _pdf_page_text(page)
+            for number, page in enumerate(reader.pages, start=1)
+            if _in_ranges(number, pages)
+        ]
+    kept = [
+        line
+        for number, line in enumerate(_read_txt(path).splitlines(), start=1)
+        if _in_ranges(number, lines)
+    ]
+    return ["\n".join(kept)]
 
 
 def _line_key(line: str) -> str:
@@ -118,6 +157,8 @@ def _flowing_text(pages: list[str]) -> str:
                 text += " " + line
             else:
                 text += line
+    for ligature, letters in _LIGATURES.items():
+        text = text.replace(ligature, letters)
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
@@ -177,16 +218,20 @@ def split_passages(text: str) -> list[str]:
         passages[-1] += " " + " ".join(current)
     else:
         close()
-    return [p for p in passages if len(p.split()) >= 20]
+    return [p for p in passages if len(p.split()) >= 12]
 
 
-def quotable_sentences(passage: str) -> list[str]:
+def quotable_sentences(passage: str, kind: str | None = None) -> list[str]:
     """Le frasi del passo che reggono da sole come citazione: complete, di
     lunghezza giusta, senza riferimenti, note o cifre."""
     quotable = []
     for sentence in _sentences(passage):
         words = sentence.split()
         if not QUOTE_MIN_WORDS <= len(words) <= QUOTE_MAX_WORDS:
+            continue
+        # In una tesi una frase tra virgolette e' quasi sempre di un altro
+        # autore, citato: non va attribuita a chi ha scritto la tesi.
+        if kind == "tesi" and re.search(r"[\"«»“”]", sentence):
             continue
         if not re.match(r"[\"«“‘]?[A-ZÀ-Þ]", sentence) or not re.search(r"[.!?…][\"»”’]?$", sentence):
             continue
@@ -230,98 +275,257 @@ def _themes(vectors: list[array], count: int, rounds: int = 8) -> list[array]:
     return centers
 
 
-def choose_fragments(passages: list[str], vectors: list[array], count: int) -> list[dict]:
-    """Sceglie fino a `count` passi rappresentativi dei temi del testo e, da
-    ognuno, la frase da citare. Ritorna [{"index", "text"}]."""
-    candidates = {i: quotable_sentences(p) for i, p in enumerate(passages)}
+# ── Quale frase regge da sola ──
+# Una citazione entra nella nebulosa accanto ai pensieri delle persone, e
+# viene letta senza il resto del testo. Regge da sola se esprime un pensiero
+# generale (di solito al presente); non regge se racconta un fatto al
+# passato, rimanda ad altro o parla di personaggi noti solo a chi ha letto.
+# Il giudizio guarda alla forma della frase: e' grossolano ma stabile, e non
+# riscrive nulla.
+_PAST_WORDS = {
+    "era", "ero", "eri", "erano", "eravamo", "fu", "fui", "furono", "ebbe", "ebbi", "ebbero",
+    "disse", "dissi", "dissero", "chiese", "chiesi", "rispose", "risposi", "vide", "vidi",
+    "fece", "feci", "fecero", "prese", "presi", "venne", "venni", "mise", "misi", "stette",
+    "aveva", "avevo", "avevano", "avevamo", "stava", "stavo", "stavano",
+    # passati remoti irregolari
+    "diressi", "diresse", "scrissi", "scrisse", "lessi", "lesse", "vissi", "visse", "corsi",
+    "chiusi", "chiuse", "scesi", "scese", "rimasi", "rimase", "risi", "rise", "decisi", "decise",
+    "sorrisi", "sorrise", "piansi", "pianse", "giunsi", "giunse", "tenni", "tenne", "volli",
+    "volle", "seppi", "seppe", "caddi", "cadde", "nacqui", "nacque", "parve", "apparve",
+    "accorsi", "accorse", "scossi", "scosse", "spensi", "spense", "accesi", "accese",
+    "aprii", "tacque", "tacqui", "bevvi", "bevve", "ruppi", "ruppe", "conobbi", "conobbe",
+}
+_NOT_PAST = {
+    "però", "ciò", "può", "perciò", "così", "lì", "sì", "dì", "ormai", "assai", "semmai",
+    "giammai", "brava", "bravo", "schiava", "schiavo", "operai", "marinai", "lunedì",
+    "martedì", "mercoledì", "giovedì", "venerdì",
+}
+_GENERAL = {
+    "ogni", "tutti", "tutto", "tutte", "nessuno", "nessuna", "sempre", "mai", "chi", "chiunque",
+    "vita", "tempo", "mondo", "uomo", "uomini", "persone", "gente", "amore", "morte", "paura",
+    "felicità", "libertà", "verità", "bellezza", "dolore", "anima", "cuore", "silenzio",
+    "senso", "futuro", "memoria", "desiderio", "sogno", "sogni", "cambiamento", "natura",
+}
+_PRESENT = {
+    "è", "sono", "siamo", "sei", "c'è", "puoi", "può", "possiamo", "possono", "devi", "deve",
+    "dobbiamo", "bisogna", "significa", "serve", "esiste", "esistono", "diventa", "resta",
+}
+_SECOND_PERSON = {"tu", "ti", "te", "tuo", "tua", "tuoi", "tue", "noi", "ci", "nostro", "nostra"}
+_META = {
+    "capitolo", "paragrafo", "tesi", "elaborato", "figura", "tabella", "pagina", "pagine",
+    "vedremo", "analizzeremo", "affrontare", "esplorare", "precedente", "successivo", "seguito",
+}
+_LEANING_START = {
+    "questo", "questa", "questi", "queste", "quello", "quella", "quelli", "quelle", "ciò",
+    "lui", "lei", "loro", "poi", "allora", "infatti", "inoltre", "quindi", "dunque", "così",
+    "ma", "e", "perché", "però", "anche", "ne", "ed", "oppure", "invece", "insomma",
+}
+THOUGHT_THRESHOLD = 2
+
+
+def _is_past(word: str) -> bool:
+    """Vero per le forme tipiche del racconto: passato remoto e imperfetto."""
+    if word in _NOT_PAST:
+        return False
+    if word in _PAST_WORDS:
+        return True
+    if len(word) >= 6 and word.endswith(("arono", "erono", "irono")):
+        return True
+    if len(word) >= 5 and word.endswith(("ava", "avo", "avano", "avamo", "eva", "evo", "evano", "evamo")):
+        return True
+    if len(word) >= 4 and (word.endswith(("ì", "ii")) or (word.endswith("ò") and not word.endswith("rò"))):
+        return True
+    return len(word) >= 5 and word.endswith("ai") and not word.endswith("rai")
+
+
+def thought_score(sentence: str) -> int:
+    """Quanto una frase regge da sola come pensiero: piu' e' alto, meglio
+    e'. Negativo per racconto, rimandi e frasi appoggiate ad altro."""
+    raw_words = re.findall(r"[\w'’]+", sentence)
+    words = [w.lower().replace("’", "'") for w in raw_words]
+    if not words or any(_is_past(w) for w in words):
+        return -5
+    score = min(3, len(_GENERAL.intersection(words))) * 2
+    score += 1 if _PRESENT.intersection(words) else 0
+    score += 1 if _SECOND_PERSON.intersection(words) else 0
+    # Nomi propri in mezzo alla frase: di solito personaggi del libro.
+    score -= min(2, sum(1 for w in raw_words[1:] if w[:1].isupper()))
+    score -= 3 if _META.intersection(words) else 0
+    score -= 2 if words[0] in _LEANING_START else 0
+    return score
+
+
+# Da quanti passi, tra i piu' vicini a un tema, cercare la frase da citare.
+PICK_PASSAGES = 3
+
+
+def choose_fragments(passages: list[str], vectors: list[array], count: int, kind: str | None = None) -> list[dict]:
+    """Sceglie fino a `count` frasi da citare, una per ciascuno dei temi
+    principali del testo. Ritorna [{"index", "text"}], dove `index` e' il
+    passo da cui la frase e' tratta."""
+    candidates = {i: quotable_sentences(p, kind) for i, p in enumerate(passages)}
     eligible = [i for i, sentences in candidates.items() if sentences]
     if not eligible:
         return []
-    count = min(count, len(eligible))
+    # Un'intervista e' breve ed e' gia' fatta di risposte: se ne prende
+    # comunque la frase migliore. Di un libro si tiene solo cio' che regge.
+    threshold = None if kind == "intervista" else THOUGHT_THRESHOLD
 
-    chosen: dict[int, array] = {}  # indice del passo -> centro del suo tema
-    for center in _themes(vectors, count):
-        ranked = sorted(eligible, key=lambda i: embeddings.similarity(vectors[i], center), reverse=True)
-        index = next((i for i in ranked if i not in chosen), None)
-        if index is not None:
-            chosen[index] = center
-
-    # In ogni passo scelto, la frase che meglio ne esprime il tema.
-    flat = [(index, sentence) for index in chosen for sentence in candidates[index]]
-    sentence_vectors = embeddings.embed_texts([sentence for _, sentence in flat])
-    best: dict[int, tuple[float, str]] = {}
-    for (index, sentence), vector in zip(flat, sentence_vectors):
-        score = embeddings.similarity(vector, chosen[index])
-        if index not in best or score > best[index][0]:
-            best[index] = (score, sentence)
-    return [{"index": index, "text": best[index][1]} for index in sorted(best)]
+    # Si cercano piu' temi delle citazioni volute: non tutti hanno una frase
+    # che regge da sola (in un romanzo molti passi sono solo racconto).
+    themes = _themes(vectors, min(len(passages), count * 2))
+    fragments: list[dict] = []
+    used: set[int] = set()
+    for center in themes:
+        near = sorted(
+            (i for i in eligible if i not in used),
+            key=lambda i: embeddings.similarity(vectors[i], center),
+            reverse=True,
+        )[:PICK_PASSAGES]
+        options = [(thought_score(sentence), i, sentence) for i in near for sentence in candidates[i]]
+        if not options:
+            continue
+        score, index, sentence = max(options, key=lambda option: option[0])
+        if threshold is not None and score < threshold:
+            continue
+        used.add(index)
+        fragments.append({"index": index, "text": sentence})
+        if len(fragments) >= count:
+            break
+    return sorted(fragments, key=lambda fragment: fragment["index"])
 
 
 # ── Caricamento ──
 
-def _file_hash(path: Path) -> str:
-    return hashlib.sha1(path.read_bytes()).hexdigest()
-
-
-def _vocabulary(limit: int = 250) -> list[str]:
-    """I temi gia' presenti nella nebulosa, dai piu' usati."""
-    counts = Counter(tag for entry in db_local.get_entries_with_tags() for tag in entry["tags"])
-    return [tag for tag, _ in counts.most_common(limit)]
-
-
-def ingest_file(path: Path, title: str, author: str, kind: str | None = None, stars: int | None = None) -> dict:
-    """Legge un testo e lo carica: biblioteca + citazioni nella nebulosa.
-    Se il file era gia' stato caricato, la versione precedente viene sostituita."""
-    stars = config.LIBRARY_STARS_PER_SOURCE if stars is None else stars
-    db_local.init_db()
-    log.info("Leggo '%s' (%s, %s)...", path.name, author, title)
-    passages = split_passages(_flowing_text(_read_pages(path)))
+def _ingest(job: dict, index: themes.ThemeIndex) -> dict:
+    """Carica un testo gia' letto: biblioteca + citazioni nella nebulosa.
+    `job` viene da `_jobs`; `index` sono i temi della nebulosa, che le
+    citazioni caricate via via arricchiscono."""
+    key, title, author, kind = job["key"], job["title"], job["author"], job["kind"]
+    passages = split_passages(job["text"])
     if not passages:
         raise ValueError(
-            f"nessun testo leggibile in '{path.name}' (se e' un PDF fatto di immagini "
+            f"nessun testo leggibile in '{key}' (se e' un PDF fatto di immagini "
             "scansionate va prima convertito in testo)"
         )
-
-    log.info("%d passi: calcolo i vettori di similarita'...", len(passages))
+    log.info("'%s' (%s): %d passi, calcolo i vettori di similarita'...", title, author, len(passages))
     vectors = embeddings.embed_texts(passages)
-    source_id = db_local.replace_source(path.name, title, author, kind, _file_hash(path))
+    # L'impronta si registra solo alla fine (vedi finish_source).
+    source_id = db_local.replace_source(key, title, author, kind, "")
     passage_ids = db_local.insert_passages(
         source_id,
         [
-            {"text": text, "model": config.OLLAMA_EMBED_MODEL, "vector": vector.tobytes()}
-            for text, vector in zip(passages, vectors)
+            {"text": passage, "model": config.OLLAMA_EMBED_MODEL, "vector": vector.tobytes()}
+            for passage, vector in zip(passages, vectors)
         ],
     )
 
-    fragments = choose_fragments(passages, vectors, stars)
-    log.info("%d citazioni scelte per la nebulosa: assegno i tag...", len(fragments))
-    vocabulary = _vocabulary()
+    fragments = choose_fragments(passages, vectors, job["stars"], kind)
+    log.info("%d citazioni scelte per la nebulosa: assegno i temi...", len(fragments))
+    for fragment in fragments:
+        fragment["id"] = db_local.FRAGMENT_ID_BASE + passage_ids[fragment["index"]]
     db_local.insert_fragments(
         source_id,
         [{"passage_id": passage_ids[f["index"]], "text": f["text"]} for f in fragments],
     )
-    tagged = 0
-    for fragment in fragments:
-        entry_id = db_local.FRAGMENT_ID_BASE + passage_ids[fragment["index"]]
-        tags = tagging.tags_for_fragment(fragment["text"], passages[fragment["index"]], vocabulary)
-        if tags:
-            db_local.set_entry_tags(entry_id, tags)
-            tagged += 1
-    embeddings.ensure_entry_embeddings(
-        [e for e in db_local.get_entries_with_tags() if e["tags"]]
+    quote_vectors = embeddings.embed_texts([f["text"] for f in fragments])
+    db_local.upsert_entry_embeddings(
+        [
+            {
+                "entry_id": fragment["id"],
+                "model": config.OLLAMA_EMBED_MODEL,
+                "text_hash": embeddings.text_hash(fragment["text"]),
+                "vector": vector.tobytes(),
+            }
+            for fragment, vector in zip(fragments, quote_vectors)
+        ]
     )
-    return {
-        "file": path.name,
-        "title": title,
-        "author": author,
-        "passages": len(passages),
-        "fragments": tagged,
-    }
+    for fragment, vector in zip(fragments, quote_vectors):
+        db_local.set_entry_tags(fragment["id"], themes.assign(fragment["text"], vector, index))
+    db_local.finish_source(source_id, job["content_hash"])
+    return {"file": key, "title": title, "author": author, "passages": len(passages), "fragments": len(fragments)}
+
+
+# ── Raccolte di interviste ──
+# Un file con piu' interviste trascritte, ognuna introdotta da una riga
+# "Fonte Audio N: ..." e da "Intervistato/a: Nome (ruolo)". Di ogni intervista
+# contano solo le risposte della trascrizione fedele: le sintesi sono scritte
+# da altri e non vanno attribuite all'intervistato.
+_INTERVIEW_START = re.compile(r"^Fonte Audio \d+:")
+_INTERVIEWEE = re.compile(r"Intervistat[oa](?:/a)?:\s*([^(|]+?)\s*(?:\(([^)]*)\))?\s*$")
+_TRANSCRIPT_START = re.compile(r"^TRASCRIZIONE\b", re.IGNORECASE)
+_SPEAKER = re.compile(r"^([^:]{2,50}):\s+(.*)$")
+_INTERVIEWERS = {"intervistatore", "intervistatrice", "intervistatori", "domanda", "moderatore"}
+
+
+def read_interviews(path: Path) -> list[dict]:
+    """Le interviste di una raccolta: [{"author", "role", "text"}], dove
+    `text` sono le sole risposte dell'intervistato. Se una persona compare
+    piu' volte (il file ripete le trascrizioni) vale la prima."""
+    interviews: dict[str, dict] = {}
+    lines = _read_txt(path).splitlines()
+    starts = [i for i, line in enumerate(lines) if _INTERVIEW_START.match(line.strip())]
+    for start, end in zip(starts, starts[1:] + [len(lines)]):
+        block = [line.strip() for line in lines[start:end]]
+        who = next((m for line in block[:4] if (m := _INTERVIEWEE.search(line))), None)
+        if not who:
+            continue
+        author = who.group(1).strip()
+        if author in interviews:
+            continue
+        answers: list[str] = []
+        in_transcript = False
+        interviewee_speaking = True
+        for line in block:
+            if _TRANSCRIPT_START.match(line):
+                in_transcript = True
+                continue
+            if not in_transcript or not line:
+                continue
+            speaker = _SPEAKER.match(line)
+            label = speaker.group(1).strip() if speaker else ""
+            if label.lower() in _INTERVIEWERS:
+                interviewee_speaking = False
+                continue
+            # Un'etichetta breve fatta di nomi propri e' chi prende la parola;
+            # altrimenti i due punti fanno parte della frase.
+            if speaker and len(label.split()) <= 4 and all(w[:1].isupper() for w in label.split()):
+                interviewee_speaking = True
+                line = speaker.group(2)
+            if interviewee_speaking:
+                answers.append(line)
+        if answers:
+            interviews[author] = {"author": author, "role": who.group(2) or "", "text": "\n\n".join(answers)}
+    return list(interviews.values())
+
+
+def _jobs(path: Path, meta: dict, stars: int | None) -> list[dict]:
+    """I testi contenuti in un file (uno solo, tranne che per le raccolte di
+    interviste), pronti da caricare. `meta` viene da `metadata_for`."""
+    stars = meta.get("stars") or stars or config.LIBRARY_STARS_PER_SOURCE
+    if meta.get("format") == "interviste":
+        texts = [
+            {"key": f"{path.name}#{item['author']}", "author": item["author"], "text": item["text"]}
+            for item in read_interviews(path)
+        ]
+    else:
+        pages = _read_pages(path, meta.get("pages"), meta.get("lines"))
+        texts = [{"key": path.name, "author": meta["author"], "text": _flowing_text(pages)}]
+    for item in texts:
+        item.update(title=meta["title"], kind=meta.get("kind"), stars=stars)
+        # Cambia se cambia il testo, la sua attribuzione o il modo di leggerlo.
+        item["content_hash"] = embeddings.text_hash(
+            f"{INGEST_VERSION}|{meta['title']}|{item['author']}|{stars}|{item['text']}"
+        )
+    return texts
 
 
 def _manifest(folder: Path) -> dict[str, dict]:
     """Titoli e autori dichiarati in testi/fonti.json:
-    [{"file": "...", "title": "...", "author": "...", "kind": "libro"}]."""
+    [{"file": "...", "title": "...", "author": "...", "kind": "libro"}].
+    Facoltativi: "pages" (PDF) o "lines" (TXT) con gli intervalli da leggere,
+    "stars" (citazioni che entrano nella nebulosa), "format": "interviste"
+    per un file che raccoglie piu' interviste."""
     path = folder / MANIFEST_NAME
     if not path.exists():
         return {}
@@ -329,15 +533,11 @@ def _manifest(folder: Path) -> dict[str, dict]:
 
 
 def metadata_for(path: Path, manifest: dict[str, dict]) -> dict:
-    """Titolo e autore di un file: da fonti.json, altrimenti dal nome del
-    file nella forma "Autore - Titolo"."""
+    """Titolo, autore e opzioni di un file: da fonti.json, altrimenti dal
+    nome del file nella forma "Autore - Titolo"."""
     declared = manifest.get(path.name)
     if declared:
-        return {
-            "title": declared["title"],
-            "author": declared.get("author") or UNKNOWN_AUTHOR,
-            "kind": declared.get("kind"),
-        }
+        return {**declared, "author": declared.get("author") or UNKNOWN_AUTHOR}
     author, separator, title = path.stem.partition(" - ")
     if separator:
         return {"title": title.strip(), "author": author.strip(), "kind": None}
@@ -351,21 +551,29 @@ def ingest_all(stars: int | None = None) -> list[dict]:
     folder = Path(config.TEXTS_DIR)
     manifest = _manifest(folder)
     files = sorted(p for p in folder.glob("*") if p.suffix.lower() in EXTENSIONS)
-    results = []
+    results: list[dict] = []
+    jobs: list[dict] = []
     for path in files:
-        meta = metadata_for(path, manifest)
-        known = db_local.get_source_by_file(path.name)
-        unchanged = (
-            known is not None
-            and known["file_hash"] == _file_hash(path)
-            and (known["title"], known["author"]) == (meta["title"], meta["author"])
-        )
-        if unchanged:
-            results.append({"file": path.name, "skipped": "gia' letto"})
-            continue
+        for job in _jobs(path, metadata_for(path, manifest), stars):
+            known = db_local.get_source_by_file(job["key"])
+            if known is not None and known["file_hash"] == job["content_hash"]:
+                results.append({"file": job["key"], "skipped": "gia' letto"})
+            else:
+                jobs.append(job)
+    if not jobs:
+        return results
+
+    # Le versioni precedenti dei testi da rileggere escono dalla nebulosa
+    # prima di calcolare i temi, per non lasciarvi dentro i loro vecchi tag.
+    for job in jobs:
+        db_local.delete_source(job["key"])
+    people = [e for e in db_local.get_entries_with_tags() if e["tags"]]
+    embeddings.ensure_entry_embeddings(people)
+    index = themes.ThemeIndex()
+    for job in jobs:
         try:
-            results.append(ingest_file(path, meta["title"], meta["author"], meta["kind"], stars))
+            results.append(_ingest(job, index))
         except ValueError as error:
             log.warning("%s", error)
-            results.append({"file": path.name, "skipped": str(error)})
+            results.append({"file": job["key"], "skipped": str(error)})
     return results

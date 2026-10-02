@@ -252,9 +252,20 @@ def replace_source(file: str, title: str, author: str, kind: str | None, file_ha
         return cursor.lastrowid
 
 
-def delete_source(file: str) -> bool:
+def finish_source(source_id: int, file_hash: str) -> None:
+    """Segna un testo come letto fino in fondo. Finche' non succede la sua
+    impronta resta vuota, e al prossimo giro viene riletto da capo: cosi' un
+    caricamento interrotto a meta' non lascia testi monchi."""
     with get_connection() as conn:
-        return conn.execute("DELETE FROM sources WHERE file = ?", (file,)).rowcount > 0
+        conn.execute("UPDATE sources SET file_hash = ? WHERE id = ?", (file_hash, source_id))
+
+
+def delete_source(file: str) -> bool:
+    """Toglie un testo (o, per una raccolta, tutte le sue interviste)."""
+    with get_connection() as conn:
+        return conn.execute(
+            "DELETE FROM sources WHERE file = ? OR file LIKE ? || '#%'", (file, file)
+        ).rowcount > 0
 
 
 def insert_passages(source_id: int, rows: list[dict]) -> list[int]:
@@ -283,7 +294,7 @@ def get_passages() -> list[sqlite3.Row]:
     with get_connection() as conn:
         return conn.execute(
             """
-            SELECT p.id, p.text, p.model, p.vector, s.title, s.author
+            SELECT p.id, p.text, p.model, p.vector, s.title, s.author, s.kind
             FROM passages p JOIN sources s ON s.id = p.source_id
             WHERE p.vector IS NOT NULL
             """
