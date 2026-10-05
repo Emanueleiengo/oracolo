@@ -3,6 +3,7 @@ import ForceGraph3D from 'react-force-graph-3d';
 import { CircleHelp, Sparkles, X } from 'lucide-react';
 import {
   askOracle,
+  fetchFigure,
   fetchGraph,
   fetchOracleAnswer,
   fetchStarQuestion,
@@ -12,7 +13,8 @@ import {
   type TagGraph,
 } from '@/lib/api';
 import TagDetailPanel, { type AskedQuestion, type OracleState } from '@/components/TagDetailPanel';
-import { SHAPE_KEYS, getConstellation, type Anchor, type Constellation, type ShapeId } from './constellation';
+import { SHAPE_KEYS, getConstellation, placeFigure, type Anchor, type Constellation, type ShapeId } from './constellation';
+import { FIGURES, type FigureId } from './figures';
 
 type GraphNode = {
   id: string;
@@ -165,6 +167,19 @@ const WANDER_PULLBACK = 1.25;
 // spazio in pixel tra la stella e la sua domanda.
 const STAR_QUESTIONS = 6;
 const QUESTION_GAP = 14;
+// ── Figura del viaggio (vedi figures.ts) ──
+// Dopo FIGURE_AFTER domande l'Oracolo sceglie la figura che il viaggio sta
+// disegnando e ne arriva al suo posto una prima parte; poi un'altra parte a
+// ogni domanda, finche' dopo FIGURE_STEPS parti e' completa. A quel punto si
+// rivela FIGURE_REVEAL_MS dopo l'arrivo su una stella (o subito, dal
+// pulsante nella scheda). FIGURE_FLIGHT_MS e' il volo di una stella verso
+// il suo posto, FIGURE_LINE_MS il tempo in cui una linea si accende.
+const FIGURE_AFTER = 2;
+const FIGURE_STEPS = 4;
+const FIGURE_REVEAL_MS = 6000;
+const FIGURE_FLIGHT_MS = 2800;
+const FIGURE_LINE_MS = 900;
+const FIGURE_COLOR = '#ffe2a8';
 // Battito della stella aperta (e del suo alone): periodo in secondi e
 // quanto si gonfia.
 const PULSE_PERIOD = 2.6;
@@ -174,6 +189,21 @@ type Vec3 = [number, number, number];
 
 // Domanda che rappresenta una stella vicina a quella aperta.
 type StarQuestion = { tag: string; text: string };
+
+// La figura che il viaggio sta disegnando: dove va ogni sua stella, quale
+// stella (tag) la occupa (null = posto ancora vuoto), quante parti sono
+// arrivate e a quante domande si era quando e' arrivata l'ultima.
+type JourneyFigure = {
+  id: FigureId;
+  name: string;
+  anchors: Anchor[];
+  view: Constellation['view'];
+  stars: (string | null)[];
+  steps: number;
+  grownAt: number;
+  // frase della rivelazione (null finche' l'Oracolo non l'ha scritta)
+  text: string | null;
+};
 
 // Punto a frazione `u` (0-1) della curva morbida che passa per `points`
 // (Catmull-Rom uniforme).
@@ -326,6 +356,9 @@ export default function App() {
   // Cronologia delle domande di tutta la visita, nell'ordine in cui sono
   // state fatte (scritte nella barra o scelte accanto alle stelle).
   const [history, setHistory] = useState<AskedQuestion[]>([]);
+  // Figura che il viaggio sta disegnando, e se la si sta guardando rivelata.
+  const [figure, setFigure] = useState<JourneyFigure | null>(null);
+  const [revealing, setRevealing] = useState(false);
   // Figura in cui sono organizzate le stelle (null = nebulosa libera). Si
   // richiama con i tasti di SHAPE_KEYS; lo stesso tasto o Esc la sciolgono.
   // Finche' e' attiva le stelle rimaste libere si attenuano; i collegamenti
@@ -356,6 +389,14 @@ export default function App() {
   const trailRef = useRef<string[]>([]);
   // Vero mentre il mouse e' su una domanda: la camera smette di girare.
   const orbitPaused = useRef(false);
+  // Stelle della figura (le altre parti della pagina devono lasciarle stare),
+  // quando ognuna e' arrivata al suo posto (per accendere le linee), e il
+  // ciclo delle figure: da quale domanda conta, se l'Oracolo sta scegliendo,
+  // quali figure ha gia' rivelato in questa visita.
+  const figureStars = useRef(new Set<string>());
+  const figureArrivals = useRef(new Map<string, number>());
+  const figureCycle = useRef({ from: 0, choosing: false, shown: [] as FigureId[] });
+  const figureLines = useRef<(SVGLineElement | null)[]>([]);
 
   // ── Load the tag graph from Oracolo ──
   const loadGraph = useCallback(async () => {
@@ -634,7 +675,8 @@ export default function App() {
     const strength = new Map<string, number>();
     for (const other of adjacency.get(id) ?? []) {
       // Il caso (meno di 1) decide solo a parita' di frasi in comune.
-      if (!visited.has(other)) strength.set(other, (linkWeights.get(pairKey(id, other)) ?? 1) + Math.random() * 0.9);
+      if (visited.has(other) || figureStars.current.has(other)) continue;
+      strength.set(other, (linkWeights.get(pairKey(id, other)) ?? 1) + Math.random() * 0.9);
     }
     const tags = [...strength.keys()].sort((a, b) => strength.get(b)! - strength.get(a)!).slice(0, STAR_QUESTIONS);
     questionStarsRef.current = { id, tags };
@@ -650,7 +692,9 @@ export default function App() {
       if (other?.x == null || other.y == null || other.z == null) return null;
       return Math.hypot(other.x - node.x!, other.y - node.y!, other.z - node.z!);
     };
+    // Le stelle volate nella figura del viaggio non sono piu' attorno a lei.
     const distances = [...(adjacency.get(node.id) ?? [])]
+      .filter((id) => !figureStars.current.has(id))
       .map(distanceTo)
       .filter((d): d is number => d !== null)
       .sort((a, b) => a - b);
@@ -954,11 +998,243 @@ export default function App() {
     travelFrame.current = requestAnimationFrame(step);
   }, [focusView, stopDrift]);
 
+  // ── Figura del viaggio (vedi FIGURE_AFTER) ──
+  useEffect(() => {
+    figureStars.current = new Set(figure?.stars.filter((tag): tag is string => tag !== null) ?? []);
+  }, [figure]);
+
+  // Le `count` stelle da mandare nella figura: prima quelle attraversate
+  // (dalla piu' recente: il cammino diventa la figura), poi le loro vicine
+  // piu' legate, poi le piu' importanti della nebulosa. Mai la stella dove
+  // il visitatore si trova o sta andando, ne' quelle che gli mostrano una
+  // domanda.
+  const figureCandidates = useCallback((count: number, taken: Set<string>) => {
+    const planned = questionStarsRef.current;
+    const excluded = new Set<string>([
+      ...taken,
+      ...(selectedId ? [selectedId] : []),
+      ...(planned ? [planned.id, ...planned.tags] : []),
+      ...starQuestions.map((q) => q.tag),
+    ]);
+    const picked: string[] = [];
+    const take = (tag: string) => {
+      if (picked.length >= count || excluded.has(tag) || !nodeById.has(tag)) return;
+      picked.push(tag);
+      excluded.add(tag);
+    };
+    const visited = history.map((step) => step.tag).reverse();
+    visited.forEach(take);
+    for (const tag of visited) {
+      const weight = (other: string) => linkWeights.get(pairKey(tag, other)) ?? 0;
+      [...(adjacency.get(tag) ?? [])].sort((a, b) => weight(b) - weight(a)).forEach(take);
+    }
+    [...nodes].sort((a, b) => b.count - a.count).forEach((node) => take(node.id));
+    return picked;
+  }, [selectedId, starQuestions, history, nodeById, linkWeights, adjacency, nodes]);
+
+  // Un'altra parte della figura: i primi posti ancora vuoti, nell'ordine
+  // del disegno, ricevono le loro stelle.
+  const growFigure = useCallback((current: JourneyFigure, asked: number): JourneyFigure => {
+    const empty = current.stars.flatMap((tag, i) => (tag ? [] : [i]));
+    const slots = empty.slice(0, Math.ceil(current.stars.length / FIGURE_STEPS));
+    const tags = figureCandidates(slots.length, new Set(current.stars.filter((t): t is string => t !== null)));
+    const stars = [...current.stars];
+    slots.forEach((slot, i) => {
+      if (tags[i]) stars[slot] = tags[i];
+    });
+    return { ...current, stars, steps: current.steps + 1, grownAt: asked };
+  }, [figureCandidates]);
+
+  // A ogni nuova domanda la figura cresce; se non c'e' ancora e il viaggio
+  // e' abbastanza lungo, l'Oracolo la sceglie.
+  useEffect(() => {
+    const asked = history.length;
+    const cycle = figureCycle.current;
+    if (figure) {
+      if (figure.steps < FIGURE_STEPS && asked > figure.grownAt) setFigure(growFigure(figure, asked));
+      return;
+    }
+    if (cycle.choosing || asked - cycle.from < FIGURE_AFTER) return;
+    cycle.choosing = true;
+    const journey = history.slice(cycle.from);
+    fetchFigure({
+      questions: journey.map((step) => step.question),
+      tags: journey.map((step) => step.tag),
+      exclude: cycle.shown,
+      speak: false,
+    })
+      .then((reply) => {
+        const id = reply.figure as FigureId;
+        const drawing = FIGURES[id];
+        if (!drawing) return;
+        const { anchors, view } = placeFigure(drawing.points, nodes.length, asked + cycle.shown.length * 7);
+        const empty = drawing.points.map(() => null);
+        setFigure(growFigure({ id, name: reply.name, anchors, view, stars: empty, steps: 0, grownAt: asked, text: null }, asked));
+      })
+      .catch(() => {
+        // Senza Oracolo il viaggio non disegna figure.
+      })
+      .finally(() => {
+        cycle.choosing = false;
+      });
+    // Solo a ogni nuova domanda: il resto si legge com'e' in quel momento.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [history.length]);
+
+  // Completata la figura, l'Oracolo prepara la frase con cui la rivelera'.
+  useEffect(() => {
+    if (!figure || figure.steps < FIGURE_STEPS || figure.text) return;
+    const id = figure.id;
+    const journey = history.slice(figureCycle.current.from);
+    const fallback = `La tua nebulosa ha preso la forma di ${figure.name}.`;
+    const settle = (text: string) => setFigure((f) => (f && f.id === id ? { ...f, text } : f));
+    fetchFigure({ questions: journey.map((s) => s.question), tags: journey.map((s) => s.tag), figure: id })
+      .then((reply) => settle(reply.text || fallback))
+      .catch(() => settle(fallback));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [figure?.id, figure?.steps]);
+
+  // Le stelle appena entrate nella figura volano al loro posto (e ci
+  // tornano se una figura dei tasti le aveva liberate).
+  useEffect(() => {
+    if (!figure || shapeActive) return;
+    const flights: { node: GraphNode; tag: string; from: Vec3; to: Anchor }[] = [];
+    figure.stars.forEach((tag, i) => {
+      const node = tag ? nodeById.get(tag) : undefined;
+      const to = figure.anchors[i];
+      if (!tag || !node || node.fx === to.x) return;
+      flights.push({ node, tag, from: [node.x ?? 0, node.y ?? 0, node.z ?? 0], to });
+    });
+    if (!flights.length) return;
+    const start = performance.now();
+    let frame = 0;
+    const step = (now: number) => {
+      const e = smoother((now - start) / FIGURE_FLIGHT_MS);
+      for (const { node, from, to } of flights) {
+        node.fx = from[0] + (to.x - from[0]) * e;
+        node.fy = from[1] + (to.y - from[1]) * e;
+        node.fz = from[2] + (to.z - from[2]) * e;
+      }
+      if (e < 1) {
+        frame = requestAnimationFrame(step);
+      } else {
+        for (const { node, tag, to } of flights) {
+          // esatti: e' cosi' che si riconosce una stella gia' al suo posto
+          node.fx = to.x;
+          node.fy = to.y;
+          node.fz = to.z;
+          figureArrivals.current.set(tag, now);
+        }
+      }
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [figure?.stars, shapeActive, nodeById]);
+
+  // Fine della figura: le sue stelle tornano libere e la nebulosa le
+  // riassorbe; il prossimo ciclo conta le domande da qui.
+  const endFigure = useCallback(() => {
+    for (const tag of figureStars.current) {
+      const node = nodeById.get(tag);
+      if (node) {
+        node.fx = undefined;
+        node.fy = undefined;
+        node.fz = undefined;
+      }
+    }
+    figureStars.current = new Set();
+    figureArrivals.current.clear();
+    if (figure) figureCycle.current.shown.push(figure.id);
+    figureCycle.current.from = history.length;
+    setFigure(null);
+    setRevealing(false);
+    graphRef.current?.d3ReheatSimulation();
+  }, [figure, history.length, nodeById]);
+
+  // Rivelazione: la scheda si chiude e la camera va nel punto da cui la
+  // figura si legge, dove compare la frase dell'Oracolo.
+  const revealFigure = useCallback(() => {
+    if (!figure || revealing) return;
+    setRevealing(true);
+    closeDetail(false);
+    graphRef.current?.cameraPosition(figure.view.position, figure.view.lookAt, FIGURE_FLIGHT_MS);
+  }, [figure, revealing, closeDetail]);
+
+  // Completa, la figura si rivela da sola poco dopo l'arrivo su una stella
+  // (il tempo di leggere la risposta), se il visitatore non riparte prima.
+  useEffect(() => {
+    if (!figure || figure.steps < FIGURE_STEPS || revealing || !selectedId || traveling || asking) return;
+    const timer = window.setTimeout(revealFigure, FIGURE_REVEAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [figure, revealing, selectedId, traveling, asking, revealFigure]);
+
+  // Dopo la rivelazione il viaggio riprende dall'ultima stella.
+  const resumeJourney = useCallback(() => {
+    const last = history[history.length - 1];
+    endFigure();
+    if (!last) {
+      flyToOverview(ZOOM_OUT_MS);
+      return;
+    }
+    setVisitorQuestion(last.question);
+    loadOracleText(last.tag, last.question);
+    selectTag(last.tag);
+  }, [history, endFigure, flyToOverview, loadOracleText, selectTag]);
+
+  // Tratti della figura (coppie di posti) e stelle che la formano.
+  const figureSegments = useMemo(
+    () => (figure ? FIGURES[figure.id].chains.flatMap((chain) => chain.slice(1).map((b, i) => [chain[i], b] as const)) : []),
+    [figure?.id]
+  );
+  const figureIds = useMemo(
+    () => new Set(figure?.stars.filter((tag): tag is string => tag !== null) ?? []),
+    [figure?.stars]
+  );
+
+  // Le linee della figura seguono le sue stelle sullo schermo e si
+  // accendono quando entrambe le stelle sono arrivate al loro posto.
+  useEffect(() => {
+    if (!figure || figureSegments.length === 0) return;
+    let frame = 0;
+    const draw = (now: number) => {
+      const fg = graphRef.current;
+      if (fg) {
+        const m = fg.camera().matrixWorldInverse.elements;
+        const ahead = (n: GraphNode) => -(m[2] * (n.x ?? 0) + m[6] * (n.y ?? 0) + m[10] * (n.z ?? 0) + m[14]);
+        figureSegments.forEach(([a, b], i) => {
+          const line = figureLines.current[i];
+          if (!line) return;
+          const ta = figure.stars[a];
+          const tb = figure.stars[b];
+          const na = ta ? nodeById.get(ta) : undefined;
+          const nb = tb ? nodeById.get(tb) : undefined;
+          const arrived = Math.max(figureArrivals.current.get(ta ?? '') ?? Infinity, figureArrivals.current.get(tb ?? '') ?? Infinity);
+          if (!na || !nb || !Number.isFinite(arrived) || ahead(na) <= 1 || ahead(nb) <= 1) {
+            line.style.opacity = '0';
+            return;
+          }
+          const p = fg.graph2ScreenCoords(na.x ?? 0, na.y ?? 0, na.z ?? 0);
+          const q = fg.graph2ScreenCoords(nb.x ?? 0, nb.y ?? 0, nb.z ?? 0);
+          line.setAttribute('x1', String(p.x));
+          line.setAttribute('y1', String(p.y));
+          line.setAttribute('x2', String(q.x));
+          line.setAttribute('y2', String(q.y));
+          line.style.opacity = String(Math.min(1, (now - arrived) / FIGURE_LINE_MS));
+        });
+      }
+      frame = requestAnimationFrame(draw);
+    };
+    frame = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(frame);
+  }, [figure, figureSegments, nodeById]);
+
   // Il visitatore fa una domanda: l'Oracolo trova la stella che raccoglie i
   // pensieri piu' vicini, la nebulosa lo porta fin li' e la stella risponde.
   const askTheOracle = useCallback(async (text: string) => {
     const question = text.trim();
     if (!question || asking || traveling) return;
+    if (revealing) endFigure();
     setAsking(true);
     setSearchResultsVisible(false);
     askInputRef.current?.blur();
@@ -991,7 +1267,7 @@ export default function App() {
     } finally {
       setAsking(false);
     }
-  }, [asking, traveling, nodes, selectedId, closeDetail, travelTo, selectTag, searchMatches, startDrift, stopDrift]);
+  }, [asking, traveling, revealing, endFigure, nodes, selectedId, closeDetail, travelTo, selectTag, searchMatches, startDrift, stopDrift]);
 
   // Porta il visitatore sulla stella `tag`, che risponde a `question`. La
   // scheda resta aperta e passa subito alla nuova stella (la risposta si
@@ -1198,6 +1474,12 @@ export default function App() {
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
+      // Durante la rivelazione Esc riprende il viaggio e i tasti delle
+      // figure aspettano.
+      if (revealing) {
+        if (event.key === 'Escape') resumeJourney();
+        return;
+      }
       if (event.key === 'Escape') {
         // Se c'e' una figura, sciogliendola la camera torna gia' alla
         // nebulosa intera.
@@ -1212,7 +1494,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [closeDetail, activeShape, loading, showAbout]);
+  }, [closeDetail, activeShape, loading, showAbout, revealing, resumeJourney]);
 
   const isNearHovered = (node: GraphNode) => {
     if (selectedId || !hoveredNode) return false;
@@ -1257,6 +1539,8 @@ export default function App() {
           cooldownTime={Infinity}
           linkColor={(link: GraphLink) => {
             const [source, target] = endpoints(link);
+            // Durante la rivelazione si vedono solo le linee della figura.
+            if (revealing) return 'rgba(210, 193, 174, 0.035)';
             const travelled = !link.constellation && trailSteps.has(pairKey(source, target));
             if (selectedId) {
               if (link.constellation) return 'rgba(255, 222, 158, 0.22)';
@@ -1277,7 +1561,7 @@ export default function App() {
             return highlightedIds.includes(source) || highlightedIds.includes(target) ? 1.1 : 0.6;
           }}
           linkDirectionalParticles={(link: GraphLink) => {
-            if (link.constellation) return 0;
+            if (link.constellation || revealing) return 0;
             const [source, target] = endpoints(link);
             if (selectedId) return source === selectedId || target === selectedId ? 5 : 0;
             return highlightedIds.includes(source) || highlightedIds.includes(target) ? 4 : 2;
@@ -1293,6 +1577,10 @@ export default function App() {
           }}
           linkDirectionalParticleSpeed={0.0035}
           nodeColor={(node: GraphNode) => {
+            // Le stelle della figura del viaggio restano accese anche mentre
+            // si legge una stella; nella rivelazione si accendono solo loro.
+            if (figureIds.has(node.id) && !shapeActive) return revealing ? '#fff4dc' : FIGURE_COLOR;
+            if (revealing) return 'rgba(200, 190, 180, 0.1)';
             const anchored = constellation.anchorByTag.has(node.id);
             if (selectedId) {
               if (node.id === selectedId || node.id === panelHoverId) return '#ffffff';
@@ -1317,6 +1605,8 @@ export default function App() {
             const base = anchor
               ? 2.2 * Math.pow(anchor.depth, 3)
               : 1.4 + Math.min(node.count, 8) * 0.3;
+            if (figureIds.has(node.id) && !shapeActive) return base * (revealing ? 2.6 : 1.8);
+            if (revealing) return base * 0.7;
             if (shapeActive && !selectedId) return anchor ? base * 1.15 : base * 0.5;
             if (selectedId) {
               if (node.id === selectedId) return base * 3;
@@ -1339,6 +1629,13 @@ export default function App() {
           showNavInfo={false}
         />
         <div ref={glowRef} className="star-glow" aria-hidden="true" />
+        {figure && !shapeActive && (
+          <svg className={`figure-lines${revealing ? ' is-revealed' : ''}`} aria-hidden="true">
+            {figureSegments.map((_, i) => (
+              <line key={i} ref={(line) => { figureLines.current[i] = line; }} style={{ opacity: 0 }} />
+            ))}
+          </svg>
+        )}
         {starQuestions.length > 0 && (
           <div className="star-questions" aria-label="Domande delle stelle vicine">
             {starQuestions.map((question) => (
@@ -1395,7 +1692,7 @@ export default function App() {
 
       {/* Si fa da parte durante il viaggio e mentre una stella e' aperta:
           coprirebbe le stelle collegate. */}
-      <aside className={`side-panel left-panel${selectedId || traveling ? ' is-receded' : ''}`}>
+      <aside className={`side-panel left-panel${selectedId || traveling || revealing ? ' is-receded' : ''}`}>
         <p className="field-title">Un archivio di <br /><em>memorie collettive.</em></p>
         <p className="field-copy">Ogni tag nasce da un pensiero condiviso e si lega agli altri che ne condividono il tema. Esplora la nebulosa per scoprire come si intrecciano.</p>
         <div className="rule" />
@@ -1405,12 +1702,20 @@ export default function App() {
         </div>
       </aside>
 
-      {suggestions.length > 0 && !selectedId && !busy && !shapeActive && !searchTerm.trim() && (
+      {suggestions.length > 0 && !selectedId && !busy && !shapeActive && !revealing && !searchTerm.trim() && (
         <div className="oracle-suggestions" aria-label="Domande suggerite">
           {suggestions.map((question) => (
             <button key={question} type="button" onClick={() => askTheOracle(question)}>{question}</button>
           ))}
         </div>
+      )}
+
+      {revealing && figure && (
+        <section className="figure-reveal" aria-live="polite">
+          <p className="figure-reveal-kicker">La tua nebulosa ha preso la forma di {figure.name}</p>
+          <p className="figure-reveal-text">{figure.text ?? '…'}</p>
+          <button type="button" onClick={resumeJourney}>riprendi il viaggio</button>
+        </section>
       )}
 
       <form
@@ -1482,6 +1787,8 @@ export default function App() {
         onHoverTag={setPanelHoverId}
         onAskAnother={askAnother}
         onWander={wander}
+        figureReady={!!figure && figure.steps >= FIGURE_STEPS && !revealing}
+        onRevealFigure={revealFigure}
       />
 
       {showAbout && (

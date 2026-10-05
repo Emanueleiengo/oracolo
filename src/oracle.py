@@ -498,3 +498,98 @@ def star_question(tag: str, asked: str | None = None) -> str | None:
     if fallback is None:
         log.warning("Nessuna domanda accettabile per la stella '%s'", tag)
     return fallback
+
+
+# ── Figure del viaggio ──
+# Mentre il visitatore fa domande, la nebulosa disegna una costellazione con
+# le stelle che attraversa (figures.ts nel sito). Quale figura nasce dipende
+# da cio' che cerca: il viaggio (domande e stelle attraversate) si confronta
+# per significato con quello di ogni figura. Gli identificativi devono essere
+# gli stessi di figures.ts.
+FIGURES = {
+    "cuore": ("un cuore", "amore, innamorarsi, affetto, tenerezza, legami, desiderare qualcuno, cuore spezzato"),
+    "rondine": ("una rondine", "libertà, partire, volare via, leggerezza, primavera, migrare, tornare da lontano"),
+    "nave": ("una nave", "viaggio, mare, partenza, avventura, rotta, orizzonte, lontananza, esplorare"),
+    "albero": ("un albero", "radici, crescere, famiglia, origini, antenati, natura, pazienza, generazioni"),
+    "casa": ("una casa", "casa, ritorno, famiglia, sicurezza, appartenenza, rifugio, nostalgia di casa"),
+    "farfalla": ("una farfalla", "trasformazione, cambiare, rinascere, crescere, fragilità, bellezza che dura poco"),
+    "clessidra": ("una clessidra", "tempo, attesa, scadenze, invecchiare, il tempo che passa, fretta, futuro"),
+    "occhio": ("un occhio", "consapevolezza, guardarsi dentro, verità, identità, conoscere se stessi, essere visti"),
+    "luna": ("una luna", "sogno, notte, solitudine, malinconia, mistero, desideri nascosti, insonnia"),
+    "chiave": ("una chiave", "segreti, risposte, soluzioni, aprirsi, possibilità, scelte, capire"),
+    "fiamma": ("una fiamma", "passione, rabbia, energia, desiderio ardente, ribellione, bruciare"),
+    "lacrima": ("una lacrima", "dolore, tristezza, perdita, lutto, pianto, ferita, mancanza di qualcuno"),
+    "montagna": ("una montagna", "fatica, sfida, ostacoli, ambizione, superare i propri limiti, resistere"),
+    "ponte": ("un ponte", "connessione, incontrarsi, relazioni, amicizia, comunicare, superare le distanze"),
+    "leone": ("un leone", "coraggio, forza, fierezza, guidare gli altri, affrontare la paura"),
+    "drago": ("un drago", "paura, mostri interiori, angoscia, potere, combattere, ciò che spaventa"),
+    "pesce": ("un pesce", "emozioni profonde, lasciarsi andare, fluire, silenzio, profondità, acqua"),
+    "lumaca": ("una lumaca", "lentezza, pazienza, calma, prendersi il proprio tempo, portarsi dietro la casa"),
+    "scarabeo": ("uno scarabeo", "rinascita, costanza, lavoro quotidiano, fatica che diventa vita, ricominciare"),
+}
+
+FIGURE_PROMPT = """Sei l'Oracolo di una nebulosa fatta dei pensieri anonimi di tante persone. \
+Mentre un visitatore viaggiava tra le stelle, la nebulosa ha preso la forma di {name}, \
+figura di: {meaning}.
+
+Le domande che ha fatto:
+{questions}
+
+Le stelle che ha attraversato: {tags}.
+
+Pronuncia la rivelazione: una frase che leghi la figura al suo cammino con un'immagine concreta. Regole:
+- in italiano, UNA SOLA frase (al massimo 24 parole), all'indicativo;
+- dagli del tu e nomina la figura;
+- non chiamarlo in nessun modo (niente figlio, amico, viandante, pellegrino);
+- non spiegare e non dare consigli: parla come una sibilla;
+- niente domande, niente virgolette, nessuna premessa.
+
+Scrivi solo la frase."""
+
+# Appellativi che il modello tende a usare anche se gli si chiede di no.
+_CALLING = re.compile(
+    r"\b(figli[oa]|amic[oa]|viandante|pellegrin[oa]|car[oa]|amat[oa])\b"
+    r"|^(amore|tesoro|cuore|anima|bambin[oa]|stella|piccol[oa])\s*,",
+    re.IGNORECASE,
+)
+
+_figure_vectors: dict[str, object] = {}
+
+
+def _figure_vector(figure: str):
+    """Vettore del significato di una figura (calcolato una volta sola)."""
+    if figure not in _figure_vectors:
+        name, meaning = FIGURES[figure]
+        _figure_vectors[figure] = embeddings.embed_texts([f"{name}: {meaning}"])[0]
+    return _figure_vectors[figure]
+
+
+def figure(questions: list[str], tags: list[str], exclude: list[str] | None = None,
+           chosen: str | None = None, speak: bool = True) -> dict:
+    """La figura che il viaggio sta disegnando e, se `speak`, la frase con cui
+    l'Oracolo la rivela. Con `chosen` la figura e' gia' decisa; altrimenti e'
+    quella dal significato piu' vicino al viaggio, escluse `exclude` (le
+    figure gia' rivelate in questa visita)."""
+    if chosen not in FIGURES:
+        journey = " ".join(questions) + " " + ", ".join(tags)
+        vector = embeddings.embed_texts([journey])[0]
+        candidates = [f for f in FIGURES if f not in (exclude or [])] or list(FIGURES)
+        chosen = max(candidates, key=lambda f: embeddings.similarity(vector, _figure_vector(f)))
+        log.info("Viaggio %r -> figura '%s'", journey[:80], chosen)
+    name, meaning = FIGURES[chosen]
+    text = None
+    if speak:
+        prompt = FIGURE_PROMPT.format(
+            name=name,
+            meaning=meaning,
+            questions="\n".join(f"- {q}" for q in questions[-8:]),
+            tags=", ".join(dict.fromkeys(tags)) or "nessuna",
+        )
+        for attempt in range(QUESTION_ATTEMPTS):
+            said = _generate(prompt, 0.85).replace('"', "").strip()
+            if said and not _FIRST_PERSON.search(said) and not _CALLING.search(said):
+                text = said
+                break
+            log.debug("Rivelazione scartata (tentativo %d): %r", attempt + 1, said)
+        text = text or f"La tua nebulosa ha preso la forma di {name}."
+    return {"figure": chosen, "name": name, "text": text}

@@ -136,6 +136,25 @@ export async function fetchStarQuestion(tag: string, asked: string | null): Prom
   return (await res.json()).question;
 }
 
+// La figura che il viaggio sta disegnando (vedi figures.ts) e, se `speak`,
+// la frase con cui l'Oracolo la rivela. Con `figure` la figura e' gia' scelta.
+export type FigureReply = { figure: string; name: string; text: string | null };
+export async function fetchFigure(journey: {
+  questions: string[];
+  tags: string[];
+  exclude?: string[];
+  figure?: string;
+  speak?: boolean;
+}): Promise<FigureReply> {
+  const res = await fetch(`${API_BASE}api/oracle/figure`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(journey),
+  });
+  if (!res.ok) throw await oracleError(res);
+  return res.json();
+}
+
 // Testo oracolare della stella `tag`: la risposta a `question` vista da quella
 // stella oppure, senza domanda, una sentenza sul suo tema.
 export async function fetchOracleAnswer(question: string | null, tag: string): Promise<OracleAnswer> {

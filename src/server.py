@@ -118,6 +118,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/ask":
             self._handle_ask()
             return
+        if path == "/api/oracle/figure":
+            self._handle_figure()
+            return
         self._send_json(404, {"error": "indirizzo sconosciuto"})
 
     def _handle_tag_detail(self, tag_name: str) -> None:
@@ -174,6 +177,26 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(404, {"error": "nessuna domanda per questa stella"})
             return
         self._send_json(200, {"question": question})
+
+    def _handle_figure(self) -> None:
+        """Figura del viaggio: {"questions": [...], "tags": [...], "exclude": [...],
+        "figure": "<gia' scelta, facoltativa>", "speak": <vero per avere la frase>}."""
+        body = self._read_json()
+        if body is None:
+            return
+        listed = lambda key: [str(v).strip() for v in body.get(key) or [] if str(v).strip()]
+        questions, tags = listed("questions"), listed("tags")
+        if not questions:
+            self._send_json(400, {"error": "manca 'questions'"})
+            return
+        try:
+            self._send_json(200, oracle.figure(
+                questions, tags, listed("exclude"),
+                chosen=str(body.get("figure") or "") or None,
+                speak=bool(body.get("speak", True)),
+            ))
+        except requests.RequestException as error:
+            self._oracle_unreachable(error)
 
     def _handle_answer(self) -> None:
         """Testo oracolare: {"question": "<facoltativa>", "tag": "<stella, facoltativa>"}.

@@ -287,3 +287,50 @@ export function getConstellation(shape: ShapeId, stars: number): Constellation {
   cache.set(key, result);
   return result;
 }
+
+// ── Figure del viaggio (figures.ts) ──
+// Una costellazione vera: poche stelle, ognuna a una profondita' diversa
+// (piu' marcata che nelle figure dei tasti: sono poche e si distinguono
+// comunque) e un poco scostata dal disegno esatto, cosi' la figura si
+// riconosce dal punto di vista ma non e' perfetta. `seed` cambia scarti e
+// profondita' a ogni figura.
+const FIGURE_DEPTH_MIN = 0.7;
+const FIGURE_DEPTH_MAX = 1.4;
+const FIGURE_JITTER = 7;
+// Piu' piccola delle figure dei tasti, e guardata un poco piu' in basso del
+// centro: cosi' sta nella parte alta dello schermo, sopra la frase
+// dell'Oracolo che compare in basso.
+const FIGURE_SCALE = 0.62;
+const FIGURE_LIFT = 95;
+
+function noise(index: number, seed: number): number {
+  const s = Math.sin(index * 91.7 + seed * 47.3 + 13.1) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+export function placeFigure(points: Pt[], stars: number, seed: number): Pick<Constellation, 'anchors' | 'view'> {
+  const growth = growthFor(stars);
+  const scale = CONSTELLATION_SCALE * FIGURE_SCALE * growth;
+  const eye: Vec3 = [
+    VIEW_DIR[0] * VIEW_DISTANCE * growth,
+    VIEW_DIR[1] * VIEW_DISTANCE * growth,
+    VIEW_DIR[2] * VIEW_DISTANCE * growth,
+  ];
+  const lift = FIGURE_LIFT * growth;
+  const anchors = points.map(([x, y], index): Anchor => {
+    const a = x + (noise(index, seed) - 0.5) * 2 * FIGURE_JITTER;
+    const b = y + (noise(index + 500, seed) - 0.5) * 2 * FIGURE_JITTER;
+    const px = (RIGHT[0] * a + UP[0] * b) * scale;
+    const py = (RIGHT[1] * a + UP[1] * b) * scale;
+    const pz = (RIGHT[2] * a + UP[2] * b) * scale;
+    const t = FIGURE_DEPTH_MIN + noise(index + 1000, seed) * (FIGURE_DEPTH_MAX - FIGURE_DEPTH_MIN);
+    return { x: eye[0] + t * (px - eye[0]), y: eye[1] + t * (py - eye[1]), z: eye[2] + t * (pz - eye[2]), depth: t };
+  });
+  return {
+    anchors,
+    view: {
+      position: { x: eye[0], y: eye[1], z: eye[2] },
+      lookAt: { x: -UP[0] * lift, y: -UP[1] * lift, z: -UP[2] * lift },
+    },
+  };
+}

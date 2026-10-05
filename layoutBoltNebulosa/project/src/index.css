@@ -239,6 +239,23 @@ button.detail-history-step:hover, button.detail-history-step:focus-visible { col
 .detail-oracle-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .detail-oracle-actions button { font: 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .08em; padding: 8px 12px; border-radius: 999px; border: 1px solid rgba(255,213,138,.45); background: transparent; color: #f0d9b0; cursor: pointer; transition: background .2s, color .2s, opacity .2s; }
 .detail-oracle-actions button:hover:not(:disabled) { background: rgba(255,213,138,.16); color: #fff; }
+/* La figura del viaggio e' completa: invito a guardarla. */
+.detail-oracle-actions .detail-figure-ready { width: 100%; border-color: rgba(255,226,168,.85); background: rgba(255,213,138,.14); color: #fff1d6; animation: oracleBreath 2.4s ease-in-out infinite; }
+
+/* Figura del viaggio: linee della costellazione sopra la nebulosa. */
+.figure-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.figure-lines line { stroke: rgba(255,226,168,.55); stroke-width: 1.1; stroke-linecap: round; }
+.figure-lines.is-revealed line { stroke: rgba(255,236,196,.95); stroke-width: 1.7; filter: drop-shadow(0 0 4px rgba(255,214,150,.6)); }
+
+/* Rivelazione della figura: la frase dell'Oracolo sopra la barra. */
+.figure-reveal { position: absolute; z-index: 3; left: 50%; bottom: 128px; transform: translateX(-50%); width: min(620px, calc(100vw - 40px)); padding: 18px 22px 16px; border-radius: 14px; border: 1px solid rgba(255,213,138,.4); background: rgba(14,15,18,.72); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); text-align: center; animation: figureAppear 1.6s ease both; }
+.figure-reveal-kicker { font: 9px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .14em; color: #e1b47f; margin: 0 0 10px; }
+.figure-reveal-text { font: italic 500 19px/1.45 'Playfair Display', serif; color: #ffe2a8; margin: 0 0 14px; }
+.figure-reveal button { font: 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .08em; padding: 8px 14px; border-radius: 999px; border: 1px solid rgba(255,213,138,.5); background: transparent; color: #f0d9b0; cursor: pointer; transition: background .2s, color .2s; }
+.figure-reveal button:hover, .figure-reveal button:focus-visible { background: rgba(255,213,138,.16); color: #fff; outline: none; }
+@keyframes figureAppear { 0%, 40% { opacity: 0; transform: translate(-50%, 8px); } 100% { opacity: 1; transform: translate(-50%, 0); } }
+@media (max-width: 760px) { .figure-reveal { bottom: 96px; } }
+@media (prefers-reduced-motion: reduce) { .figure-reveal, .detail-oracle-actions .detail-figure-ready { animation: none; } }
 .detail-oracle-actions button:disabled { opacity: .45; cursor: default; }
 @keyframes oracleBreath { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 

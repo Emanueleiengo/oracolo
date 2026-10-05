@@ -110,6 +110,9 @@ type Props = {
   // Dopo la risposta: fare un'altra domanda, o viaggiare nella nebulosa.
   onAskAnother?: () => void;
   onWander?: () => void;
+  // La figura del viaggio e' completa: si puo' guardarla subito.
+  figureReady?: boolean;
+  onRevealFigure?: () => void;
 };
 
 // Scheda del tag, ancorata a destra: a differenza del vecchio modale non ha
@@ -126,6 +129,8 @@ export default function TagDetailPanel({
   onHoverTag,
   onAskAnother,
   onWander,
+  figureReady = false,
+  onRevealFigure,
 }: Props) {
   if (!tag) return null;
 
@@ -188,6 +193,9 @@ export default function TagDetailPanel({
               </div>
             )}
             <div className="detail-oracle-actions">
+              {figureReady && (
+                <button className="detail-figure-ready" onClick={onRevealFigure}>la nebulosa ha preso forma: guardala</button>
+              )}
               <button onClick={onAskAnother}>fai un'altra domanda</button>
               <button onClick={onWander}>viaggia nella nebulosa</button>
             </div>
