@@ -52,10 +52,21 @@ const LINK_DISTANCE = 40;
 const LINK_STRENGTH = 0.4;
 const CHARGE_STRENGTH = -200;
 
-// Distanza della camera da una stella quando ci si zooma sopra, e ingombro
-// del pannello laterale (larghezza + margine, vedi .detail-dock in index.css):
-// la stella viene portata al centro dello spazio libero a sinistra del pannello.
-const FOCUS_DISTANCE = 170;
+// Inquadratura di una stella aperta: la camera si allontana quanto basta a
+// mostrare anche le stelle a cui e' collegata. Si tiene dentro questa parte
+// delle collegate (le piu' lontane di un tema molto collegato possono restare
+// fuori), con un raggio comunque tra il minimo e il massimo, e un margine.
+const FOCUS_NEIGHBORS_SHOWN = 0.8;
+const FOCUS_MIN_REACH = 60;
+const FOCUS_MAX_REACH = 190;
+const FOCUS_MARGIN = 1.15;
+const FOCUS_MIN_DISTANCE = 240;
+// Parte dell'altezza dello schermo utile per l'inquadratura: in alto c'e'
+// l'intestazione, in basso la barra delle domande.
+const FOCUS_VERTICAL_ROOM = 0.72;
+// Ingombro del pannello laterale (larghezza + margine, vedi .detail-dock in
+// index.css): la stella viene portata al centro dello spazio libero a
+// sinistra del pannello.
 const PANEL_SPACE = 410;
 const PANEL_MIN_VIEWPORT = 760;
 
@@ -111,13 +122,25 @@ function importanceColor(importance: number, id: string): string {
   return shaded(c0.map((v, channel) => v + (c1[channel] - v) * k), id, FAINTEST_STAR + (1 - FAINTEST_STAR) * t);
 }
 
+// Durata del volo verso una stella aperta con un click.
+const FLY_MS = 1400;
 // Viaggio verso la stella trovata dall'Oracolo: quanto dura, e a che
-// distanza la camera passa accanto alle stelle intermedie.
-const TRAVEL_MS = 5200;
-const TRAVEL_PASS_DISTANCE = 90;
-// Distanza da cui si guardano una stella e le sue vicine quando si sceglie
-// di viaggiare nella nebulosa.
+// distanza la camera passa accanto alle stelle intermedie (abbastanza da
+// vederle scorrere, non tanto vicino da riempire lo schermo).
+const TRAVEL_MS = 6000;
+const TRAVEL_PASS_DISTANCE = 200;
+// Mentre l'Oracolo cerca, la nebulosa attira a se': la camera avanza
+// lentamente e le gira un poco attorno. In DRIFT_MS fa quasi tutto il tratto:
+// si avvicina di DRIFT_PUSH (parte della distanza) e gira di DRIFT_TURN
+// radianti, rallentando senza fermarsi di colpo.
+const DRIFT_MS = 8000;
+const DRIFT_PUSH = 0.3;
+const DRIFT_TURN = 0.5;
+// Quando si sceglie di viaggiare nella nebulosa la camera arretra dalla
+// stella: di WANDER_PULLBACK volte la distanza a cui era, e almeno fino a
+// WANDER_DISTANCE, cosi' si vedono anche le stelle attorno da puntare.
 const WANDER_DISTANCE = 430;
+const WANDER_PULLBACK = 1.25;
 // Battito della stella aperta (e del suo alone): periodo in secondi e
 // quanto si gonfia.
 const PULSE_PERIOD = 2.6;
@@ -142,6 +165,45 @@ function alongPath(points: Vec3[], u: number): Vec3 {
     + (2 * p0[axis] - 5 * p1[axis] + 4 * p2[axis] - p3[axis]) * t * t
     + (3 * p1[axis] - p0[axis] - 3 * p2[axis] + p3[axis]) * t * t * t
   )) as Vec3;
+}
+
+// La stessa curva, ma con `u` = parte della lunghezza gia' percorsa: con
+// alongPath ogni tratto dura uguale, corto o lungo che sia, e la camera
+// cambierebbe velocita' di colpo a ogni stella.
+function evenPath(points: Vec3[], samples = 240): (u: number) => Vec3 {
+  const marks: Vec3[] = [];
+  const lengths: number[] = [];
+  for (let i = 0; i <= samples; i++) {
+    const p = alongPath(points, i / samples);
+    const q = marks[i - 1];
+    lengths.push(q ? lengths[i - 1] + Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) : 0);
+    marks.push(p);
+  }
+  const total = lengths[samples] || 1;
+  return (u: number) => {
+    const goal = Math.min(1, Math.max(0, u)) * total;
+    let lo = 0;
+    let hi = samples;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (lengths[mid] <= goal) lo = mid; else hi = mid;
+    }
+    const k = (goal - lengths[lo]) / (lengths[hi] - lengths[lo] || 1);
+    const a = marks[lo];
+    const b = marks[hi];
+    return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+  };
+}
+
+// Chi ha chiesto al sistema meno animazioni salta i movimenti di camera.
+function reducedMotion(): boolean {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+}
+
+// Da 0 a 1 partendo e arrivando con dolcezza (accelerazione nulla agli estremi).
+function smoother(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return x * x * x * (x * (6 * x - 15) + 10);
 }
 
 // Raggio (nelle unita' del grafo) della luce soffusa attorno alla stella
@@ -500,9 +562,40 @@ export default function App() {
     setHighlightedIds(searchMatches.map((n) => n.id));
   }, [searchMatches]);
 
-  // Inquadratura di una stella aperta: la camera le sta davanti, nella
-  // direzione da cui la si guardava, e la mira e' spostata un po' a destra
-  // cosi' che la stella finisca nello spazio libero a sinistra del pannello.
+  // Stelle collegate a ciascuna stella (tutte, dal grafo completo).
+  const adjacency = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    const add = (from: string, to: string) => {
+      if (!map.has(from)) map.set(from, new Set());
+      map.get(from)!.add(to);
+    };
+    graphData.links.forEach((l) => {
+      add(l.source, l.target);
+      add(l.target, l.source);
+    });
+    return map;
+  }, [graphData.links]);
+  const nodeById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+
+  // Raggio attorno alla stella entro cui stanno le sue collegate (vedi
+  // FOCUS_NEIGHBORS_SHOWN).
+  const neighborhoodReach = useCallback((node: GraphNode) => {
+    const distances: number[] = [];
+    for (const id of adjacency.get(node.id) ?? []) {
+      const other = nodeById.get(id);
+      if (other?.x == null || other.y == null || other.z == null) continue;
+      distances.push(Math.hypot(other.x - node.x!, other.y - node.y!, other.z - node.z!));
+    }
+    if (distances.length === 0) return FOCUS_MIN_REACH;
+    distances.sort((a, b) => a - b);
+    const reach = distances[Math.min(distances.length - 1, Math.floor(distances.length * FOCUS_NEIGHBORS_SHOWN))];
+    return Math.min(FOCUS_MAX_REACH, Math.max(FOCUS_MIN_REACH, reach));
+  }, [adjacency, nodeById]);
+
+  // Inquadratura di una stella aperta: la camera la guarda dalla direzione
+  // da cui la si guardava, da lontano quanto basta a vedere anche le stelle
+  // collegate, e la mira e' spostata un po' a destra cosi' che la stella
+  // finisca al centro dello spazio libero a sinistra del pannello.
   const focusView = useCallback((node: GraphNode) => {
     const fg = graphRef.current;
     if (!fg || node.x == null || node.y == null || node.z == null) return null;
@@ -523,34 +616,25 @@ export default function App() {
 
     const panelOpen = window.innerWidth >= PANEL_MIN_VIEWPORT;
     const share = panelOpen ? Math.min(0.45, PANEL_SPACE / window.innerWidth) : 0;
-    const halfWidth = FOCUS_DISTANCE * Math.tan((cam.fov * Math.PI) / 360) * cam.aspect;
-    const shift = share * halfWidth;
+    const tanHalf = Math.tan((cam.fov * Math.PI) / 360);
+    // Mezza apertura utile: in verticale tra intestazione e barra, in
+    // orizzontale lo spazio libero accanto al pannello.
+    const room = Math.min(tanHalf * FOCUS_VERTICAL_ROOM, tanHalf * cam.aspect * (1 - share));
+    const distance = Math.max(FOCUS_MIN_DISTANCE, (neighborhoodReach(node) * FOCUS_MARGIN) / room);
+    const shift = share * distance * tanHalf * cam.aspect;
 
     return {
-      position: { x: node.x + dx * FOCUS_DISTANCE, y: node.y + dy * FOCUS_DISTANCE, z: node.z + dz * FOCUS_DISTANCE },
+      position: { x: node.x + dx * distance, y: node.y + dy * distance, z: node.z + dz * distance },
       lookAt: { x: node.x + rx * shift, y: node.y, z: node.z + rz * shift },
     };
-  }, []);
+  }, [neighborhoodReach]);
 
   // Zoom su una stella.
   const flyToNode = useCallback((node: GraphNode) => {
     const view = focusView(node);
-    if (view) graphRef.current?.cameraPosition(view.position, view.lookAt, 1000);
+    if (view) graphRef.current?.cameraPosition(view.position, view.lookAt, FLY_MS);
   }, [focusView]);
 
-  // Stelle collegate a quella selezionata (tutte, dal grafo completo).
-  const adjacency = useMemo(() => {
-    const map = new Map<string, Set<string>>();
-    const add = (from: string, to: string) => {
-      if (!map.has(from)) map.set(from, new Set());
-      map.get(from)!.add(to);
-    };
-    graphData.links.forEach((l) => {
-      add(l.source, l.target);
-      add(l.target, l.source);
-    });
-    return map;
-  }, [graphData.links]);
   const linkedIds = useMemo(
     () => (selectedId ? adjacency.get(selectedId) ?? new Set<string>() : new Set<string>()),
     [adjacency, selectedId]
@@ -665,33 +749,84 @@ export default function App() {
     loadOracleText(selectedId, visitorQuestion);
   }, [selectedId, oracle, visitorQuestion, loadOracleText]);
 
-  useEffect(() => () => cancelAnimationFrame(travelFrame.current), []);
+  // Attesa della risposta: la camera avanza piano verso dove guarda e gira
+  // un poco attorno (vedi DRIFT_MS), finche' non parte il viaggio.
+  const driftFrame = useRef(0);
+  const stopDrift = useCallback(() => {
+    cancelAnimationFrame(driftFrame.current);
+    driftFrame.current = 0;
+  }, []);
+  const startDrift = useCallback(() => {
+    const fg = graphRef.current;
+    if (!fg || reducedMotion()) return;
+    const target = (fg.controls() as { target?: { x: number; y: number; z: number } } | undefined)?.target;
+    const aim = { x: target?.x ?? 0, y: target?.y ?? 0, z: target?.z ?? 0 };
+    const cam = fg.camera().position;
+    const off: Vec3 = [cam.x - aim.x, cam.y - aim.y, cam.z - aim.z];
+    const start = performance.now();
+    stopDrift();
+    const step = (now: number) => {
+      // Parte da ferma, poi rallenta avvicinandosi alla fine del tratto.
+      const t = (now - start) / DRIFT_MS;
+      const k = 1 - (1 + 3 * t) * Math.exp(-3 * t);
+      const cos = Math.cos(DRIFT_TURN * k);
+      const sin = Math.sin(DRIFT_TURN * k);
+      const scale = 1 - DRIFT_PUSH * k;
+      fg.cameraPosition(
+        {
+          x: aim.x + (off[0] * cos + off[2] * sin) * scale,
+          y: aim.y + off[1] * scale,
+          z: aim.z + (off[2] * cos - off[0] * sin) * scale,
+        },
+        aim,
+        0
+      );
+      driftFrame.current = requestAnimationFrame(step);
+    };
+    driftFrame.current = requestAnimationFrame(step);
+  }, [stopDrift]);
+
+  useEffect(() => () => {
+    cancelAnimationFrame(travelFrame.current);
+    cancelAnimationFrame(driftFrame.current);
+  }, []);
 
   // Viaggio: la camera entra nella nebulosa, passa accanto alle stelle `via`
   // e si ferma davanti a `target`, dove chiama `onArrive`.
   const travelTo = useCallback((target: GraphNode, via: GraphNode[], onArrive: () => void) => {
+    stopDrift();
     const fg = graphRef.current;
     const end = focusView(target);
-    if (!fg || !end || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    if (!fg || !end || reducedMotion()) {
       if (end) fg?.cameraPosition(end.position, end.lookAt, 0);
       onArrive();
       return;
     }
     const cam = fg.camera().position;
+    const arrival: Vec3 = [end.position.x, end.position.y, end.position.z];
+    const star: Vec3 = [target.x ?? 0, target.y ?? 0, target.z ?? 0];
+    const gap = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
     const points: Vec3[] = [[cam.x, cam.y, cam.z]];
-    for (const star of via) {
-      if (star.x == null || star.y == null || star.z == null) continue;
+    for (const passing of via.slice(0, 2)) {
+      if (passing.x == null || passing.y == null || passing.z == null) continue;
       // Accanto alla stella, dal lato da cui si arriva: non ci si passa dentro.
       const prev = points[points.length - 1];
-      const d: Vec3 = [prev[0] - star.x, prev[1] - star.y, prev[2] - star.z];
+      const d: Vec3 = [prev[0] - passing.x, prev[1] - passing.y, prev[2] - passing.z];
       const len = Math.hypot(d[0], d[1], d[2]) || 1;
-      points.push([
-        star.x + (d[0] / len) * TRAVEL_PASS_DISTANCE,
-        star.y + (d[1] / len) * TRAVEL_PASS_DISTANCE,
-        star.z + (d[2] / len) * TRAVEL_PASS_DISTANCE,
-      ]);
+      const point: Vec3 = [
+        passing.x + (d[0] / len) * TRAVEL_PASS_DISTANCE,
+        passing.y + (d[1] / len) * TRAVEL_PASS_DISTANCE,
+        passing.z + (d[2] / len) * TRAVEL_PASS_DISTANCE,
+      ];
+      // Solo se avvicina all'arrivo senza andare piu' vicino alla stella di
+      // quanto ci si fermera': altrimenti la camera andrebbe oltre e
+      // tornerebbe indietro.
+      if (gap(point, arrival) < gap(prev, arrival) * 0.8 && gap(point, star) > gap(arrival, star) * 0.9) {
+        points.push(point);
+      }
     }
-    points.push([end.position.x, end.position.y, end.position.z]);
+    points.push(arrival);
+    const path = evenPath(points);
 
     const aim = (fg.controls() as { target?: { x: number; y: number; z: number } } | undefined)?.target;
     const from: Vec3 = aim ? [aim.x, aim.y, aim.z] : [0, 0, 0];
@@ -701,8 +836,8 @@ export default function App() {
     cancelAnimationFrame(travelFrame.current);
     const step = (now: number) => {
       const t = Math.min(1, (now - start) / TRAVEL_MS);
-      const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-      const [x, y, z] = alongPath(points, eased);
+      const eased = smoother(t);
+      const [x, y, z] = path(eased);
       // Lo sguardo si volta verso la stella di arrivo gia' nella prima parte
       // del viaggio, cosi' la si vede avvicinarsi.
       const turn = Math.min(1, eased * 1.7);
@@ -721,7 +856,7 @@ export default function App() {
       }
     };
     travelFrame.current = requestAnimationFrame(step);
-  }, [focusView]);
+  }, [focusView, stopDrift]);
 
   // Il visitatore fa una domanda: l'Oracolo trova la stella che raccoglie i
   // pensieri piu' vicini, la nebulosa lo porta fin li' e la stella risponde.
@@ -731,6 +866,9 @@ export default function App() {
     setAsking(true);
     setSearchResultsVisible(false);
     askInputRef.current?.blur();
+    // Mentre l'Oracolo cerca, la nebulosa comincia gia' ad attirare verso di
+    // se' (se e' aperta una stella, la camera resta su di lei fino al viaggio).
+    if (!selectedId) startDrift();
     try {
       const reply = await askOracle(question);
       const target = nodes.find((n) => n.id === reply.tag);
@@ -748,6 +886,7 @@ export default function App() {
         selectTag(reply.tag, false);
       });
     } catch (err) {
+      stopDrift();
       // Senza Oracolo resta la ricerca per nome: si apre il primo tag trovato.
       const first = searchMatches[0];
       if (first) selectTag(first.id);
@@ -755,7 +894,7 @@ export default function App() {
     } finally {
       setAsking(false);
     }
-  }, [asking, traveling, nodes, closeDetail, travelTo, selectTag, searchMatches]);
+  }, [asking, traveling, nodes, selectedId, closeDetail, travelTo, selectTag, searchMatches, startDrift, stopDrift]);
 
   // Dopo aver letto la risposta: un'altra domanda...
   const askAnother = useCallback(() => {
@@ -775,11 +914,12 @@ export default function App() {
     const cam = fg.camera().position;
     const d: Vec3 = [cam.x - node.x, cam.y - node.y, cam.z - node.z];
     const len = Math.hypot(d[0], d[1], d[2]) || 1;
+    const distance = Math.max(WANDER_DISTANCE, len * WANDER_PULLBACK);
     fg.cameraPosition(
       {
-        x: node.x + (d[0] / len) * WANDER_DISTANCE,
-        y: node.y + (d[1] / len) * WANDER_DISTANCE,
-        z: node.z + (d[2] / len) * WANDER_DISTANCE,
+        x: node.x + (d[0] / len) * distance,
+        y: node.y + (d[1] / len) * distance,
+        z: node.z + (d[2] / len) * distance,
       },
       { x: node.x, y: node.y, z: node.z },
       ZOOM_OUT_MS
@@ -966,7 +1106,9 @@ export default function App() {
         </div>
       </header>
 
-      <aside className="side-panel left-panel">
+      {/* Si fa da parte durante il viaggio e mentre una stella e' aperta:
+          coprirebbe le stelle collegate. */}
+      <aside className={`side-panel left-panel${selectedId || traveling ? ' is-receded' : ''}`}>
         <p className="field-title">Un archivio di <br /><em>memorie collettive.</em></p>
         <p className="field-copy">Ogni tag nasce da un pensiero condiviso e si lega agli altri che ne condividono il tema. Esplora la nebulosa per scoprire come si intrecciano.</p>
         <div className="rule" />

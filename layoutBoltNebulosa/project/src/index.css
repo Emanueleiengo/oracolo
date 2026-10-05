@@ -43,6 +43,8 @@ h1 span { color: #dbab72; margin: 0 3px; }
 .help-button:hover { border-color: #d7a66e; color: #e1b47f; transform: rotate(12deg); }
 
 .side-panel { top: 148px; left: 42px; width: 238px; color: #c8c1b8; }
+.left-panel { transition: opacity .8s ease; }
+.left-panel.is-receded { opacity: 0; pointer-events: none; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; color: #8d867f; border-bottom: 1px solid rgba(236,226,211,.2); padding-bottom: 12px; font-size: 9px; }
 .mono-label { font-size: 9px; color: #b3865f; }
 .field-title { margin: 22px 0 13px; color: #e3dbd0; font-size: 24px; line-height: 1.16; letter-spacing: -.04em; }
