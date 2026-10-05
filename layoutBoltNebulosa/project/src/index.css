@@ -206,14 +206,17 @@ h1 span { color: #dbab72; margin: 0 3px; }
 .detail-dock .detail-entry { color: #d6cec4; background: rgba(255,255,255,.055); border-radius: 0 6px 6px 0; }
 .detail-dock .modal-close { border-color: rgba(255,255,255,.22); color: #b9b1a8; background: rgba(255,255,255,.05); }
 
-/* Viaggio: le tappe fatte finora, nello stesso azzurro delle stelle visitate. */
+/* Cronologia delle domande della visita, nello stesso azzurro delle stelle
+   visitate: una riga per domanda, unite da un filo come le tappe di un
+   cammino. Se sono tante, l'elenco scorre. */
 .detail-trail { margin: 0 36px 20px 0; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,.14); }
 .detail-trail-heading { font: 8px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .1em; color: #a39b93; margin: 0 0 9px; }
-.detail-trail ol { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 2px; list-style: none; margin: 0; padding: 0; }
-.detail-trail li { display: flex; align-items: center; gap: 2px; color: rgba(95,224,255,.55); }
-.detail-trail-step { font: 11px/1 inherit; padding: 5px 9px; border-radius: 999px; border: 1px solid rgba(95,224,255,.35); background: rgba(95,224,255,.07); color: #9eeaff; cursor: pointer; transition: background .2s, border-color .2s, color .2s; }
-button.detail-trail-step:hover { background: rgba(95,224,255,.2); border-color: rgba(95,224,255,.7); color: #fff; }
-.detail-trail-step.is-current { border-color: rgba(255,255,255,.5); background: rgba(255,255,255,.14); color: #fff; cursor: default; }
+.detail-history ol { list-style: none; margin: 0; padding: 0 0 0 12px; max-height: 9.6em; overflow-y: auto; border-left: 1px solid rgba(95,224,255,.3); }
+.detail-history li { position: relative; }
+.detail-history li::before { content: ''; position: absolute; left: -15px; top: .62em; width: 5px; height: 5px; border-radius: 50%; background: rgba(95,224,255,.7); }
+.detail-history-step { display: block; width: 100%; padding: 3px 0; border: 0; background: none; text-align: left; font: italic 12px/1.4 'Playfair Display', serif; color: #8fdcf2; cursor: pointer; transition: color .2s; }
+button.detail-history-step:hover, button.detail-history-step:focus-visible { color: #fff; outline: none; }
+.detail-history-step.is-current { color: #fff; cursor: default; }
 
 /* Citazioni dai testi letti dall'Oracolo: sempre con autore e titolo. */
 .detail-source { display: block; margin-top: 5px; font: normal 9px/1.4 'DM Mono', monospace; letter-spacing: .04em; color: #b3865f; }

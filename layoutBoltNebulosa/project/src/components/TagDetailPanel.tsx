@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, ChevronRight, Hash, Sparkles, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowUpRight, Hash, Sparkles, X } from 'lucide-react';
 import type { OracleReading, OracleThought, TagDetail, TextSource } from '@/lib/api';
+
+// Una domanda della cronologia, con la stella che le ha risposto.
+export type AskedQuestion = { question: string; tag: string };
 
 // Cosa dice l'Oracolo sulla stella aperta.
 export type OracleState = {
@@ -48,18 +51,60 @@ function OracleText({ text }: { text: string }) {
   );
 }
 
+// Cronologia delle domande della visita, dalla prima all'ultima: si apre
+// scorsa fino in fondo, dove ci sono le piu' recenti.
+function QuestionHistory({
+  history,
+  current,
+  onStep,
+  hover,
+}: {
+  history: AskedQuestion[];
+  current: number;
+  onStep?: (index: number) => void;
+  hover: (name: string) => object;
+}) {
+  const list = useRef<HTMLOListElement>(null);
+  useEffect(() => {
+    if (list.current) list.current.scrollTop = list.current.scrollHeight;
+  }, [history.length]);
+
+  return (
+    <nav className="detail-trail detail-history" aria-label="Le tue domande">
+      <p className="detail-trail-heading">Le tue domande</p>
+      <ol ref={list}>
+        {history.map((step, i) => (
+          // la stessa domanda puo' tornare piu' volte: la chiave include la posizione
+          <li key={`${i}-${step.question}`}>
+            {i === current ? (
+              <span className="detail-history-step is-current" aria-current="step">{step.question}</span>
+            ) : (
+              <button className="detail-history-step" onClick={() => onStep?.(i)} {...hover(step.tag)}>
+                {step.question}
+              </button>
+            )}
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
 type Props = {
   tag: TagDetail | null;
   // Quante stelle collegate sono illuminate nella nebulosa (tutte, non solo
   // le 12 piu' rilevanti elencate qui sotto).
   linkedCount?: number;
-  // Tappe del viaggio fatto finora, dalla prima alla stella aperta.
-  trail?: string[];
+  // Le domande fatte finora nella visita, con la stella che ha risposto.
+  history?: AskedQuestion[];
   oracle?: OracleState | null;
+  // Vero mentre la nebulosa porta il visitatore su questa stella: la
+  // risposta aspetta l'arrivo.
+  arriving?: boolean;
   onClose: () => void;
   onSelectTag: (name: string) => void;
-  // Torna a una tappa precedente del viaggio (indice in `trail`).
-  onTrailStep?: (index: number) => void;
+  // Torna a una domanda della cronologia (indice in `history`).
+  onHistoryStep?: (index: number) => void;
   // Passando il mouse su un tag, la sua stella si illumina.
   onHoverTag?: (name: string | null) => void;
   // Dopo la risposta: fare un'altra domanda, o viaggiare nella nebulosa.
@@ -72,11 +117,12 @@ type Props = {
 export default function TagDetailPanel({
   tag,
   linkedCount,
-  trail = [],
+  history = [],
   oracle,
+  arriving = false,
   onClose,
   onSelectTag,
-  onTrailStep,
+  onHistoryStep,
   onHoverTag,
   onAskAnother,
   onWander,
@@ -96,31 +142,18 @@ export default function TagDetailPanel({
     onFocus: () => onHoverTag?.(name),
     onBlur: () => onHoverTag?.(null),
   });
+  // La domanda della cronologia a cui sta rispondendo questa stella (l'ultima volta).
+  let current = -1;
+  history.forEach((step, i) => {
+    if (step.tag === tag.name && step.question === asked) current = i;
+  });
 
   return (
     <aside className="detail-dock" aria-label={`Tag ${tag.name}`}>
       <button className="modal-close" onClick={onClose} aria-label="Chiudi"><X size={18} /></button>
       <div className="detail-dock-scroll" key={tag.name}>
-        {trail.length > 1 && (
-          <nav className="detail-trail" aria-label="Viaggio">
-            <p className="detail-trail-heading">Viaggio</p>
-            <ol>
-              {trail.map((name, i) => {
-                const current = i === trail.length - 1;
-                return (
-                  // la stessa stella puo' comparire in piu' tappe: la chiave include la posizione
-                  <li key={`${i}-${name}`}>
-                    {i > 0 && <ChevronRight size={11} aria-hidden="true" />}
-                    {current ? (
-                      <span className="detail-trail-step is-current" aria-current="step">{name}</span>
-                    ) : (
-                      <button className="detail-trail-step" onClick={() => onTrailStep?.(i)} {...hover(name)}>{name}</button>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
-          </nav>
+        {history.length > 1 && (
+          <QuestionHistory history={history} current={current} onStep={onHistoryStep} hover={hover} />
         )}
 
         <div className="detail-kind"><Hash size={15} /> {asked ? tag.name : 'Tag'}</div>
@@ -133,12 +166,12 @@ export default function TagDetailPanel({
         {voice && (
           <section className="detail-oracle" aria-label="L'Oracolo">
             <p className="detail-oracle-heading"><Sparkles size={12} /> L'Oracolo</p>
-            {voice.text ? (
+            {voice.text && !arriving ? (
               <OracleText key={voice.text} text={voice.text} />
             ) : (
               <p className="detail-oracle-waiting">la stella sta per parlare…</p>
             )}
-            {voice.text && voice.entries.length > 0 && (
+            {voice.text && !arriving && voice.entries.length > 0 && (
               <div className="detail-oracle-sources">
                 <p className="detail-oracle-label">Pensieri che ha ascoltato</p>
                 {voice.entries.map((entry) => (
@@ -146,7 +179,7 @@ export default function TagDetailPanel({
                 ))}
               </div>
             )}
-            {voice.text && voice.readings.length > 0 && (
+            {voice.text && !arriving && voice.readings.length > 0 && (
               <div className="detail-oracle-sources">
                 <p className="detail-oracle-label">Dai testi che ha letto</p>
                 {voice.readings.map((reading) => (

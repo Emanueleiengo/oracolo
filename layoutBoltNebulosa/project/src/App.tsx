@@ -11,7 +11,7 @@ import {
   type TagDetail,
   type TagGraph,
 } from '@/lib/api';
-import TagDetailPanel, { type OracleState } from '@/components/TagDetailPanel';
+import TagDetailPanel, { type AskedQuestion, type OracleState } from '@/components/TagDetailPanel';
 import { SHAPE_KEYS, getConstellation, type Anchor, type Constellation, type ShapeId } from './constellation';
 
 type GraphNode = {
@@ -128,11 +128,27 @@ function importanceColor(importance: number, id: string): string {
 
 // Durata del volo verso una stella aperta con un click.
 const FLY_MS = 1400;
-// Viaggio verso la stella trovata dall'Oracolo: quanto dura, e a che
-// distanza la camera passa accanto alle stelle intermedie (abbastanza da
-// vederle scorrere, non tanto vicino da riempire lo schermo).
-const TRAVEL_MS = 6000;
+// Viaggio verso una stella: dura TRAVEL_BASE_MS piu' TRAVEL_MS_PER_UNIT per
+// ogni unita' di strada, tra TRAVEL_MIN_MS (un salto tra stelle vicine) e
+// TRAVEL_MAX_MS (il tuffo nella nebulosa dopo una domanda scritta).
+// TRAVEL_PASS_DISTANCE e' la distanza a cui la camera passa accanto alle
+// stelle intermedie (abbastanza da vederle scorrere, non tanto vicino da
+// riempire lo schermo).
+const TRAVEL_BASE_MS = 900;
+const TRAVEL_MS_PER_UNIT = 2.6;
+const TRAVEL_MIN_MS = 1500;
+const TRAVEL_MAX_MS = 5000;
 const TRAVEL_PASS_DISTANCE = 200;
+// Da una stella a un'altra la camera non scivola di lato: a meta' strada
+// scende verso le due stelle (di questa parte della distanza) e poi risale
+// sull'inquadratura d'arrivo, cosi' le stelle intorno le scorrono accanto.
+const HOP_DIVE = 0.45;
+// In sosta su una stella la camera le gira attorno piano (radianti al
+// secondo), cominciando dopo ORBIT_DELAY_MS e prendendo velocita' in
+// ORBIT_RAMP_MS.
+const ORBIT_SPEED = 0.045;
+const ORBIT_DELAY_MS = 1500;
+const ORBIT_RAMP_MS = 2500;
 // Mentre l'Oracolo cerca, la nebulosa attira a se': la camera avanza
 // lentamente e le gira un poco attorno. In DRIFT_MS fa quasi tutto il tratto:
 // si avvicina di DRIFT_PUSH (parte della distanza) e gira di DRIFT_TURN
@@ -184,7 +200,7 @@ function alongPath(points: Vec3[], u: number): Vec3 {
 // La stessa curva, ma con `u` = parte della lunghezza gia' percorsa: con
 // alongPath ogni tratto dura uguale, corto o lungo che sia, e la camera
 // cambierebbe velocita' di colpo a ogni stella.
-function evenPath(points: Vec3[], samples = 240): (u: number) => Vec3 {
+function evenPath(points: Vec3[], samples = 240): { at: (u: number) => Vec3; length: number } {
   const marks: Vec3[] = [];
   const lengths: number[] = [];
   for (let i = 0; i <= samples; i++) {
@@ -194,7 +210,7 @@ function evenPath(points: Vec3[], samples = 240): (u: number) => Vec3 {
     marks.push(p);
   }
   const total = lengths[samples] || 1;
-  return (u: number) => {
+  const at = (u: number): Vec3 => {
     const goal = Math.min(1, Math.max(0, u)) * total;
     let lo = 0;
     let hi = samples;
@@ -207,6 +223,7 @@ function evenPath(points: Vec3[], samples = 240): (u: number) => Vec3 {
     const b = marks[hi];
     return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
   };
+  return { at, length: lengths[samples] };
 }
 
 // Chi ha chiesto al sistema meno animazioni salta i movimenti di camera.
@@ -309,6 +326,9 @@ export default function App() {
   // Domande delle stelle vicine a quella aperta (vedi STAR_QUESTIONS),
   // scritte di nuovo a ogni visita: compaiono man mano che arrivano.
   const [starQuestions, setStarQuestions] = useState<StarQuestion[]>([]);
+  // Cronologia delle domande di tutta la visita, nell'ordine in cui sono
+  // state fatte (scritte nella barra o scelte accanto alle stelle).
+  const [history, setHistory] = useState<AskedQuestion[]>([]);
   // Figura in cui sono organizzate le stelle (null = nebulosa libera). Si
   // richiama con i tasti di SHAPE_KEYS; lo stesso tasto o Esc la sciolgono.
   // Finche' e' attiva le stelle rimaste libere si attenuano; i collegamenti
@@ -727,14 +747,6 @@ export default function App() {
     openTag(id, fly);
   }, [adjacency, openTag]);
 
-  // Torna a una tappa precedente del viaggio: le tappe successive si spengono.
-  const backToTrailStep = useCallback((index: number) => {
-    const id = trail[index];
-    if (id === undefined) return;
-    setTrail(trail.slice(0, index + 1));
-    openTag(id);
-  }, [trail, openTag]);
-
   // Chiude la scheda. Se era aperta la camera si allontana dalla stella:
   // torna a inquadrare la figura attiva, oppure tutta la nebulosa. Con
   // `zoomOut` falso la camera resta ferma (serve quando sta gia' per partire
@@ -844,8 +856,13 @@ export default function App() {
   }, []);
 
   // Viaggio: la camera entra nella nebulosa, passa accanto alle stelle `via`
-  // e si ferma davanti a `target`, dove chiama `onArrive`.
-  const travelTo = useCallback((target: GraphNode, via: GraphNode[], onArrive: () => void) => {
+  // e si ferma davanti a `target`, dove chiama `onArrive`. `from` e' la
+  // stella da cui si parte, se si salta da una stella all'altra.
+  const travelTo = useCallback((
+    target: GraphNode,
+    { via = [], from }: { via?: GraphNode[]; from?: GraphNode },
+    onArrive: () => void = () => {}
+  ) => {
     stopDrift();
     const fg = graphRef.current;
     const end = focusView(target);
@@ -877,26 +894,40 @@ export default function App() {
         points.push(point);
       }
     }
+    if (from && points.length === 1 && from.x != null && from.y != null && from.z != null) {
+      // Salto tra stelle: a meta' strada la camera scende verso di loro (HOP_DIVE).
+      const start = points[0];
+      points.push([0, 1, 2].map((axis) => {
+        const camera = (start[axis] + arrival[axis]) / 2;
+        const stars = ([from.x, from.y, from.z][axis]! + star[axis]) / 2;
+        return camera + (stars - camera) * HOP_DIVE;
+      }) as Vec3);
+    }
     points.push(arrival);
     const path = evenPath(points);
+    const duration = Math.min(TRAVEL_MAX_MS, Math.max(TRAVEL_MIN_MS, TRAVEL_BASE_MS + path.length * TRAVEL_MS_PER_UNIT));
 
     const aim = (fg.controls() as { target?: { x: number; y: number; z: number } } | undefined)?.target;
-    const from: Vec3 = aim ? [aim.x, aim.y, aim.z] : [0, 0, 0];
+    const lookFrom: Vec3 = aim ? [aim.x, aim.y, aim.z] : [0, 0, 0];
     const to: Vec3 = [end.lookAt.x, end.lookAt.y, end.lookAt.z];
     const start = performance.now();
     setTraveling(true);
     cancelAnimationFrame(travelFrame.current);
     const step = (now: number) => {
-      const t = Math.min(1, (now - start) / TRAVEL_MS);
+      const t = Math.min(1, (now - start) / duration);
       const eased = smoother(t);
-      const [x, y, z] = path(eased);
+      const [x, y, z] = path.at(eased);
       // Lo sguardo si volta verso la stella di arrivo gia' nella prima parte
       // del viaggio, cosi' la si vede avvicinarsi.
       const turn = Math.min(1, eased * 1.7);
       const k = turn * turn * (3 - 2 * turn);
       fg.cameraPosition(
         { x, y, z },
-        { x: from[0] + (to[0] - from[0]) * k, y: from[1] + (to[1] - from[1]) * k, z: from[2] + (to[2] - from[2]) * k },
+        {
+          x: lookFrom[0] + (to[0] - lookFrom[0]) * k,
+          y: lookFrom[1] + (to[1] - lookFrom[1]) * k,
+          z: lookFrom[2] + (to[2] - lookFrom[2]) * k,
+        },
         0
       );
       if (t < 1) {
@@ -933,7 +964,8 @@ export default function App() {
       setVisitorQuestion(question);
       setSearchTerm('');
       closeDetail(false);
-      travelTo(target, via, () => {
+      setHistory((asked) => [...asked, { question, tag: reply.tag }]);
+      travelTo(target, { via }, () => {
         setOracle({ tag: reply.tag, question, silent: false, ...voice });
         selectTag(reply.tag, false);
       });
@@ -948,18 +980,83 @@ export default function App() {
     }
   }, [asking, traveling, nodes, selectedId, closeDetail, travelTo, selectTag, searchMatches, startDrift, stopDrift]);
 
-  // Il visitatore sceglie la domanda di una stella vicina: la nebulosa lo
-  // porta li' e la stella risponde proprio a quella domanda (la risposta si
-  // prepara durante il viaggio).
-  const followQuestion = useCallback((question: StarQuestion) => {
-    const node = nodeById.get(question.tag);
-    if (!node || asking || traveling) return;
+  // Porta il visitatore sulla stella `tag`, che risponde a `question`. La
+  // scheda resta aperta e passa subito alla nuova stella (la risposta si
+  // prepara durante il volo e compare all'arrivo); la camera salta da una
+  // stella all'altra.
+  const journeyTo = useCallback((tag: string, question: string) => {
+    const node = nodeById.get(tag);
+    if (!node || asking || traveling) return false;
     setPanelHoverId(null);
-    setVisitorQuestion(question.text);
-    closeDetail(false);
-    loadOracleText(question.tag, question.text);
-    travelTo(node, [], () => selectTag(question.tag, false));
-  }, [nodeById, asking, traveling, closeDetail, loadOracleText, travelTo, selectTag]);
+    setVisitorQuestion(question);
+    loadOracleText(tag, question);
+    if (tag !== selectedId) {
+      travelTo(node, { from: selectedId ? nodeById.get(selectedId) : undefined });
+      selectTag(tag, false);
+    }
+    return true;
+  }, [nodeById, asking, traveling, selectedId, loadOracleText, travelTo, selectTag]);
+
+  // Il visitatore sceglie la domanda di una stella vicina: la stella
+  // risponde proprio a quella domanda, che entra nella cronologia.
+  const followQuestion = useCallback((question: StarQuestion) => {
+    if (journeyTo(question.tag, question.text)) {
+      setHistory((asked) => [...asked, { question: question.text, tag: question.tag }]);
+    }
+  }, [journeyTo]);
+
+  // Dalla cronologia: si torna su quella stella e si rilegge la sua risposta.
+  const revisit = useCallback((index: number) => {
+    const step = history[index];
+    if (step) journeyTo(step.tag, step.question);
+  }, [history, journeyTo]);
+
+  // In sosta su una stella la camera le gira piano attorno (vedi
+  // ORBIT_SPEED), come un viaggio che non si ferma mai del tutto: ruotano
+  // insieme camera e punto mirato, quindi la stella resta dov'e' sullo
+  // schermo. Si ferma appena il visitatore trascina o usa la rotella.
+  useEffect(() => {
+    const fg = graphRef.current;
+    const node = selectedId ? nodeById.get(selectedId) : undefined;
+    if (!fg || !node || traveling || asking || reducedMotion()) return;
+    type Controls = {
+      target?: { x: number; y: number; z: number };
+      addEventListener?: (type: string, listener: () => void) => void;
+      removeEventListener?: (type: string, listener: () => void) => void;
+    };
+    const controls = fg.controls() as Controls | undefined;
+    let frame = 0;
+    let begun = 0;
+    let last = 0;
+    const stop = () => cancelAnimationFrame(frame);
+    controls?.addEventListener?.('start', stop);
+    const spin = (now: number) => {
+      if (!begun) begun = last = now;
+      const since = now - begun - ORBIT_DELAY_MS;
+      const aim = controls?.target;
+      if (since > 0 && aim && node.x != null && node.z != null) {
+        const angle = (ORBIT_SPEED * Math.min(1, since / ORBIT_RAMP_MS) * (now - last)) / 1000;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        // Rotazione attorno all'asse verticale che passa per la stella.
+        const turn = (x: number, z: number) => ({
+          x: node.x! + (x - node.x!) * cos + (z - node.z!) * sin,
+          z: node.z! + (z - node.z!) * cos - (x - node.x!) * sin,
+        });
+        const cam = fg.camera().position;
+        const camera = turn(cam.x, cam.z);
+        const target = turn(aim.x, aim.z);
+        fg.cameraPosition({ x: camera.x, y: cam.y, z: camera.z }, { x: target.x, y: aim.y, z: target.z }, 0);
+      }
+      last = now;
+      frame = requestAnimationFrame(spin);
+    };
+    frame = requestAnimationFrame(spin);
+    return () => {
+      cancelAnimationFrame(frame);
+      controls?.removeEventListener?.('start', stop);
+    };
+  }, [selectedId, traveling, asking, nodeById]);
 
   // Ogni volta che una stella si apre, le sue vicine scrivono una domanda
   // nuova (vedi STAR_QUESTIONS), che compare appena e' pronta. La domanda
@@ -1348,11 +1445,12 @@ export default function App() {
       <TagDetailPanel
         tag={detailTag}
         linkedCount={linkedIds.size}
-        trail={trail}
+        history={history}
         oracle={oracle}
+        arriving={traveling}
         onClose={() => closeDetail()}
         onSelectTag={selectTag}
-        onTrailStep={backToTrailStep}
+        onHistoryStep={revisit}
         onHoverTag={setPanelHoverId}
         onAskAnother={askAnother}
         onWander={wander}
