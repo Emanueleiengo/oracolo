@@ -5,7 +5,7 @@ una riga. Qui invece:
 
 1. si cercano, per similarita' di significato, i temi gia' presenti nella
    nebulosa piu' vicini alla citazione (il "centro" di un tema e' la media
-   dei vettori delle frasi che lo usano);
+   dei vettori dei pensieri delle persone che lo usano);
 2. il modello sceglie tra quei pochi quali la descrivono davvero: cosi' la
    citazione si collega alle stelle che esistono;
 3. solo se nessun tema esistente e' abbastanza vicino, il modello propone
@@ -15,7 +15,9 @@ una riga. Qui invece:
 
 import json
 import math
+import os
 import re
+import unicodedata
 from array import array
 from difflib import get_close_matches
 
@@ -50,18 +52,34 @@ adatti preferisci quello piu' preciso.
 Rispondi SOLO con un oggetto JSON con la chiave "temi" e, come valore, la lista dei numeri \
 dei temi scelti."""
 
-NEW_THEME_PROMPT = """Qual e' il tema di questa frase? Rispondi con UNA sola parola: un sostantivo \
-comune, al singolare, in minuscolo. Nient'altro.
+NEW_THEME_PROMPT = """Di che cosa parla questa frase? Proponi tre temi diversi, dal piu' adatto al \
+meno adatto. Ogni tema e' UNA sola parola: un sostantivo comune, al singolare, in minuscolo. Scrivi \
+solo le tre parole, separate da virgole.
 
 Frase:
 \"\"\"{text}\"\"\""""
 
 _WORD = re.compile(r"^[a-zà-ÿ]{3,18}$")
-_NOT_THEMES = {"tema", "frase", "nessuno", "none", "nulla", "parola", "sostantivo"}
+# Parole che andrebbero bene per qualsiasi frase: come stelle non dicono nulla.
+# Il modello tende a sceglierle quando compaiono nella frase ("quella situazione").
+_GENERIC = {
+    "fatto", "situazione", "descrizione", "cosa", "modo", "parte", "tipo", "caso", "aspetto",
+    "elemento", "esempio", "concetto", "argomento", "questione", "oggetto", "fenomeno",
+    "contesto", "punto", "livello", "forma", "maniera", "genere", "volta", "qualcosa",
+    "niente", "nulla", "nessuno", "none", "persona", "frase", "testo", "tema", "parola",
+    "sostantivo",
+}
 
 
 class ThemeIndex:
-    """I temi della nebulosa con il loro centro, aggiornabile mentre si caricano i testi."""
+    """I temi della nebulosa con il loro centro, aggiornabile mentre si caricano i testi.
+
+    Il centro di un tema lo fanno solo i pensieri delle persone che lo usano.
+    Le citazioni non lo spostano: per lo stile si somigliano tutte, e un tema
+    che ne raccogliesse si avvicinerebbe a tutte le successive e se le
+    prenderebbe (succedeva a "consapevolezza" e "cambiamento"). Per lo stesso
+    motivo un tema nato dai testi non ha un centro e non viene proposto per
+    somiglianza: si riusa solo quando il modello lo ripropone per nome."""
 
     def __init__(self) -> None:
         self._sums: dict[str, list[float]] = {}
@@ -72,21 +90,24 @@ class ThemeIndex:
         for entry in db_local.get_entries_with_tags():
             if entry["id"] in vectors:
                 for tag in entry["tags"]:
-                    self.add(tag, vectors[entry["id"]])
+                    self.add(tag, vectors[entry["id"]], quote=entry["source"] is not None)
 
     def __contains__(self, tag: str) -> bool:
-        return tag in self._sums
+        return tag in self._uses
 
     def names(self) -> list[str]:
-        return list(self._sums)
+        return list(self._uses)
 
-    def add(self, tag: str, vector: array) -> None:
-        """Una frase in piu' usa questo tema (che nasce, se non c'era)."""
+    def add(self, tag: str, vector: array, quote: bool = False) -> None:
+        """Una frase in piu' usa questo tema (che nasce, se non c'era).
+        `quote` vale per le citazioni dei testi."""
+        self._uses[tag] = self._uses.get(tag, 0) + 1
+        self._total += 1
+        if quote:
+            return
         total = self._sums.get(tag)
         self._sums[tag] = list(vector) if total is None else [a + b for a, b in zip(total, vector)]
         self._centers.pop(tag, None)
-        self._uses[tag] = self._uses.get(tag, 0) + 1
-        self._total += 1
 
     def _specificity(self, tag: str) -> float:
         """Da 0 (tema onnipresente) a 1 (tema raro)."""
@@ -144,23 +165,54 @@ def _picked(text: str, near: list[tuple[float, str]]) -> list[str]:
     return picks[:MAX_PICKS]
 
 
-def _new_theme(text: str, index: ThemeIndex) -> str | None:
+def _plain(word: str) -> str:
+    """La parola senza accenti: "citta'" e "città" sono lo stesso tema."""
+    return "".join(ch for ch in unicodedata.normalize("NFD", word) if not unicodedata.combining(ch))
+
+
+def _existing(word: str, names: list[str]) -> str:
+    """Il tema gia' presente che e' la stessa parola scritta in un altro modo
+    (con o senza accento, al plurale, con un'altra desinenza: memoria e
+    memorie, sciamano e sciamanesimo), se c'e'; altrimenti la parola stessa."""
+    plain = {_plain(name): name for name in names}
+    key = _plain(word)
+    if key in plain:
+        return plain[key]
+    close = get_close_matches(key, list(plain), n=1, cutoff=0.85)
+    if close:
+        return plain[close[0]]
+    for other, name in plain.items():
+        shared = len(os.path.commonprefix([key, other]))
+        if shared >= max(5, 0.8 * min(len(key), len(other))):
+            return name
+    return word
+
+
+def _new_theme(text: str, vector: array, index: ThemeIndex) -> str | None:
     """Una parola nuova per il tema della frase, o None se il modello non
-    ne da' una valida. Se e' quasi uguale a un tema esistente, vale quello."""
+    ne da' una valida. Il modello ne propone tre; vale quella che per
+    significato e' piu' vicina alla frase. Se e' un tema esistente scritto
+    in un altro modo, vale quello."""
     reply = ollama.post(
         "/api/generate",
         {
             "model": config.OLLAMA_TAG_MODEL,
             "prompt": NEW_THEME_PROMPT.format(text=text),
             "stream": False,
-            "options": {"temperature": 0, "num_predict": 8},
+            "options": {"temperature": 0, "num_predict": 24},
         },
     )
-    words = reply["response"].strip().lower().split()
-    word = words[0].strip(" .,;:!?\"'«»“”") if words else ""
-    if not _WORD.match(word) or word in _NOT_THEMES:
+    words: list[str] = []
+    for piece in re.split(r"[,;/\n]+", reply["response"].lower()):
+        word = piece.strip(" .:!?\"'«»“”*-–0123456789()")
+        if _WORD.match(word) and word not in _GENERIC and word not in words:
+            words.append(word)
+    if not words:
         return None
-    return next(iter(get_close_matches(word, index.names(), n=1, cutoff=0.85)), word)
+    if len(words) > 1:
+        closeness = [embeddings.similarity(vector, v) for v in embeddings.embed_texts(words)]
+        words = [word for _, word in sorted(zip(closeness, words), reverse=True)]
+    return _existing(words[0], index.names())
 
 
 def assign(text: str, vector: array, index: ThemeIndex) -> list[str]:
@@ -168,12 +220,12 @@ def assign(text: str, vector: array, index: ThemeIndex) -> list[str]:
     near = index.nearest(vector, CANDIDATES)
     tags = _picked(text, near) if near else []
     if not near or near[0][0] < NEW_THEME_BELOW:
-        fresh = _new_theme(text, index)
+        fresh = _new_theme(text, vector, index)
         if fresh and fresh not in tags:
             tags.append(fresh)
     if not tags and near:
         tags = [near[0][1]]  # il modello non ha scelto: vale il tema piu' vicino
     tags = tags[: config.MAX_TAGS_PER_ENTRY]
     for tag in tags:
-        index.add(tag, vector)
+        index.add(tag, vector, quote=True)
     return tags

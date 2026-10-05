@@ -32,7 +32,7 @@ log = get_logger(__name__)
 MANIFEST_NAME = "fonti.json"
 # Versione del modo in cui i testi vengono letti e taggati: cambiandola, al
 # prossimo `ingest` tutti i testi vengono riletti con il metodo nuovo.
-INGEST_VERSION = 4
+INGEST_VERSION = 5
 EXTENSIONS = {".pdf", ".txt"}
 UNKNOWN_AUTHOR = "Autore sconosciuto"
 
@@ -51,6 +51,9 @@ _ABBREVIATIONS = {
     "prof", "dott", "dr", "sig", "ing", "avv", "mr", "mrs", "vs", "ca", "ss", "sg", "segg",
 }
 _SENTENCE_END = re.compile(r"(?<=[.!?…])[\"»”’)\]]*\s+(?=[\"«“‘(\[]?[A-ZÀ-Þ])")
+# Fine di una frase (o di un suo pezzo): punteggiatura, poi al massimo
+# virgolette, parentesi o il numero di una nota.
+_CLOSED = re.compile(r"[.!?…:;,][\"»”’)\]\d]*$")
 # Segni di apparato (riferimenti, note, indirizzi) che rendono una frase
 # inadatta a essere citata da sola.
 _APPARATUS = re.compile(
@@ -207,6 +210,11 @@ def split_passages(text: str) -> list[str]:
             # Tabelle, bibliografia e numeri sparsi non entrano nei passi.
             if not _looks_like_prose(sentence):
                 continue
+            # Nemmeno titoli e didascalie (brevi e senza punto finale): nel
+            # passo si attaccherebbero alla frase successiva, e la citazione
+            # comincerebbe col titolo ("Memoria Animale (Farina) Credo che...").
+            if len(sentence.split()) <= 8 and not _CLOSED.search(sentence):
+                continue
             n = len(sentence.split())
             if words and words + n > PASSAGE_MAX_WORDS:
                 close()
@@ -320,19 +328,35 @@ _LEANING_START = {
     "questo", "questa", "questi", "queste", "quello", "quella", "quelli", "quelle", "ciò",
     "lui", "lei", "loro", "poi", "allora", "infatti", "inoltre", "quindi", "dunque", "così",
     "ma", "e", "perché", "però", "anche", "ne", "ed", "oppure", "invece", "insomma",
+    "altri", "altre", "altro", "altra",
 }
 THOUGHT_THRESHOLD = 2
 
 
+# Davanti a -iva, -ivano non e' imperfetto: attiva, decisiva, viva, arriva,
+# deriva, priva, schiva (e i loro plurali).
+_NOT_IMPERFECT_STEM = ("t", "s", "v", "rr", "er", "pr", "sch")
+
+
 def _is_past(word: str) -> bool:
     """Vero per le forme tipiche del racconto: passato remoto e imperfetto."""
-    if word in _NOT_PAST:
+    word = word.rsplit("'", 1)[-1]  # c'era, s'accorse: conta il verbo
+    if not word or word in _NOT_PAST:
         return False
     if word in _PAST_WORDS:
         return True
     if len(word) >= 6 and word.endswith(("arono", "erono", "irono")):
         return True
     if len(word) >= 5 and word.endswith(("ava", "avo", "avano", "avamo", "eva", "evo", "evano", "evamo")):
+        return True
+    for ending in ("iva", "ivano", "ivamo"):  # costituiva, riunivano
+        if word.endswith(ending) and len(word) >= len(ending) + 3:
+            return not word[: -len(ending)].endswith(_NOT_IMPERFECT_STEM)
+    # Passato remoto di venire, tenere e composti (avvenne, ottenne), ma non
+    # le eta' (ventenne) ne' le antenne.
+    if word.endswith("venne") or (word.endswith("tenne") and not word.endswith("ntenne")):
+        return True
+    if len(word) >= 4 and word.endswith("é") and not word.endswith("ché"):  # batté, poté (non perché)
         return True
     if len(word) >= 4 and (word.endswith(("ì", "ii")) or (word.endswith("ò") and not word.endswith("rò"))):
         return True
@@ -353,6 +377,8 @@ def thought_score(sentence: str) -> int:
     score -= min(2, sum(1 for w in raw_words[1:] if w[:1].isupper()))
     score -= 3 if _META.intersection(words) else 0
     score -= 2 if words[0] in _LEANING_START else 0
+    # Un elenco separato da punti e virgola e' una descrizione, non un pensiero.
+    score -= 2 if sentence.count(";") >= 2 else 0
     return score
 
 
