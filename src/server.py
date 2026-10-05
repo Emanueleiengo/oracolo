@@ -100,6 +100,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/oracle/question":
             self._handle_oracle_question()
             return
+        if path == "/api/oracle/star-question":
+            self._handle_star_question()
+            return
         if path == "/api/suggestions":
             self._send_json(200, {"questions": oracle.suggestions()})
             return
@@ -150,6 +153,25 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if question is None:
             self._send_json(404, {"error": "tag non trovato"})
+            return
+        self._send_json(200, {"question": question})
+
+    def _handle_star_question(self) -> None:
+        """Domanda che rappresenta una stella: ?tag=<nome>&asked=<domanda che ha
+        portato il visitatore dove si trova, facoltativa>. Ogni volta nuova."""
+        query = parse_qs(urlsplit(self.path).query)
+        tag = query.get("tag", [""])[0].strip()
+        asked = query.get("asked", [""])[0].strip() or None
+        if not tag:
+            self._send_json(400, {"error": "manca 'tag'"})
+            return
+        try:
+            question = oracle.star_question(tag, asked)
+        except requests.RequestException as error:
+            self._oracle_unreachable(error)
+            return
+        if question is None:
+            self._send_json(404, {"error": "nessuna domanda per questa stella"})
             return
         self._send_json(200, {"question": question})
 

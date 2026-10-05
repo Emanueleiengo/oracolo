@@ -5,6 +5,7 @@ import {
   askOracle,
   fetchGraph,
   fetchOracleAnswer,
+  fetchStarQuestion,
   fetchSuggestions,
   fetchTagDetail,
   type TagDetail,
@@ -59,6 +60,9 @@ const CHARGE_STRENGTH = -200;
 const FOCUS_NEIGHBORS_SHOWN = 0.8;
 const FOCUS_MIN_REACH = 60;
 const FOCUS_MAX_REACH = 190;
+// Le stelle che mostrano la loro domanda (vedi STAR_QUESTIONS) restano
+// comunque nell'inquadratura, fino a questa distanza.
+const FOCUS_MAX_QUESTION_REACH = 260;
 const FOCUS_MARGIN = 1.15;
 const FOCUS_MIN_DISTANCE = 240;
 // Parte dell'altezza dello schermo utile per l'inquadratura: in alto c'e'
@@ -141,12 +145,22 @@ const DRIFT_TURN = 0.5;
 // WANDER_DISTANCE, cosi' si vedono anche le stelle attorno da puntare.
 const WANDER_DISTANCE = 430;
 const WANDER_PULLBACK = 1.25;
+// Attorno alla stella aperta, le stelle vicine mostrano una domanda che le
+// rappresenta: sceglierla e' fare quella domanda, e la stella risponde. Sono
+// le STAR_QUESTIONS piu' legate (con piu' frasi in comune; a parita', a
+// caso), escluse quelle gia' attraversate nel viaggio. QUESTION_GAP e' lo
+// spazio in pixel tra la stella e la sua domanda.
+const STAR_QUESTIONS = 6;
+const QUESTION_GAP = 14;
 // Battito della stella aperta (e del suo alone): periodo in secondi e
 // quanto si gonfia.
 const PULSE_PERIOD = 2.6;
 const PULSE_SWELL = 0.16;
 
 type Vec3 = [number, number, number];
+
+// Domanda che rappresenta una stella vicina a quella aperta.
+type StarQuestion = { tag: string; text: string };
 
 // Punto a frazione `u` (0-1) della curva morbida che passa per `points`
 // (Catmull-Rom uniforme).
@@ -292,6 +306,9 @@ export default function App() {
   // e il percorso riparte da capo quando si apre una stella non collegata
   // all'ultima.
   const [trail, setTrail] = useState<string[]>([]);
+  // Domande delle stelle vicine a quella aperta (vedi STAR_QUESTIONS),
+  // scritte di nuovo a ogni visita: compaiono man mano che arrivano.
+  const [starQuestions, setStarQuestions] = useState<StarQuestion[]>([]);
   // Figura in cui sono organizzate le stelle (null = nebulosa libera). Si
   // richiama con i tasti di SHAPE_KEYS; lo stesso tasto o Esc la sciolgono.
   // Finche' e' attiva le stelle rimaste libere si attenuano; i collegamenti
@@ -313,6 +330,13 @@ export default function App() {
   const travelFrame = useRef(0);
   // Stella aperta, leggibile dal ciclo che anima le stelle.
   const selectedRef = useRef<string | null>(null);
+  // Stelle vicine scelte per mostrare la loro domanda: si decidono quando la
+  // camera vola verso la stella, cosi' l'inquadratura le comprende.
+  const questionStarsRef = useRef<{ id: string; tags: string[] } | null>(null);
+  // Le domande sullo schermo, che il ciclo di disegno sposta con le stelle.
+  const questionLabels = useRef(new Map<string, HTMLButtonElement>());
+  // Il viaggio, leggibile quando si scelgono le stelle vicine.
+  const trailRef = useRef<string[]>([]);
 
   // ── Load the tag graph from Oracolo ──
   const loadGraph = useCallback(async () => {
@@ -576,20 +600,47 @@ export default function App() {
     return map;
   }, [graphData.links]);
   const nodeById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+  // Quante frasi hanno in comune due stelle collegate.
+  const linkWeights = useMemo(
+    () => new Map(graphData.links.map((l) => [pairKey(l.source, l.target), l.value])),
+    [graphData.links]
+  );
+
+  useEffect(() => { trailRef.current = trail; }, [trail]);
+
+  // Sceglie le stelle vicine a `id` che mostreranno la loro domanda (vedi
+  // STAR_QUESTIONS) e le ricorda per quando la stella si apre.
+  const planQuestionStars = useCallback((id: string) => {
+    const visited = new Set(trailRef.current);
+    const strength = new Map<string, number>();
+    for (const other of adjacency.get(id) ?? []) {
+      // Il caso (meno di 1) decide solo a parita' di frasi in comune.
+      if (!visited.has(other)) strength.set(other, (linkWeights.get(pairKey(id, other)) ?? 1) + Math.random() * 0.9);
+    }
+    const tags = [...strength.keys()].sort((a, b) => strength.get(b)! - strength.get(a)!).slice(0, STAR_QUESTIONS);
+    questionStarsRef.current = { id, tags };
+    return tags;
+  }, [adjacency, linkWeights]);
 
   // Raggio attorno alla stella entro cui stanno le sue collegate (vedi
-  // FOCUS_NEIGHBORS_SHOWN).
-  const neighborhoodReach = useCallback((node: GraphNode) => {
-    const distances: number[] = [];
-    for (const id of adjacency.get(node.id) ?? []) {
+  // FOCUS_NEIGHBORS_SHOWN), allargato se serve a comprendere le stelle
+  // `kept`.
+  const neighborhoodReach = useCallback((node: GraphNode, kept: string[] = []) => {
+    const distanceTo = (id: string) => {
       const other = nodeById.get(id);
-      if (other?.x == null || other.y == null || other.z == null) continue;
-      distances.push(Math.hypot(other.x - node.x!, other.y - node.y!, other.z - node.z!));
-    }
-    if (distances.length === 0) return FOCUS_MIN_REACH;
-    distances.sort((a, b) => a - b);
-    const reach = distances[Math.min(distances.length - 1, Math.floor(distances.length * FOCUS_NEIGHBORS_SHOWN))];
-    return Math.min(FOCUS_MAX_REACH, Math.max(FOCUS_MIN_REACH, reach));
+      if (other?.x == null || other.y == null || other.z == null) return null;
+      return Math.hypot(other.x - node.x!, other.y - node.y!, other.z - node.z!);
+    };
+    const distances = [...(adjacency.get(node.id) ?? [])]
+      .map(distanceTo)
+      .filter((d): d is number => d !== null)
+      .sort((a, b) => a - b);
+    const shown = distances.length
+      ? distances[Math.min(distances.length - 1, Math.floor(distances.length * FOCUS_NEIGHBORS_SHOWN))]
+      : FOCUS_MIN_REACH;
+    const reach = Math.min(FOCUS_MAX_REACH, Math.max(FOCUS_MIN_REACH, shown));
+    const farthestKept = Math.max(0, ...kept.map(distanceTo).filter((d): d is number => d !== null));
+    return Math.max(reach, Math.min(FOCUS_MAX_QUESTION_REACH, farthestKept));
   }, [adjacency, nodeById]);
 
   // Inquadratura di una stella aperta: la camera la guarda dalla direzione
@@ -620,14 +671,15 @@ export default function App() {
     // Mezza apertura utile: in verticale tra intestazione e barra, in
     // orizzontale lo spazio libero accanto al pannello.
     const room = Math.min(tanHalf * FOCUS_VERTICAL_ROOM, tanHalf * cam.aspect * (1 - share));
-    const distance = Math.max(FOCUS_MIN_DISTANCE, (neighborhoodReach(node) * FOCUS_MARGIN) / room);
+    const reach = neighborhoodReach(node, planQuestionStars(node.id));
+    const distance = Math.max(FOCUS_MIN_DISTANCE, (reach * FOCUS_MARGIN) / room);
     const shift = share * distance * tanHalf * cam.aspect;
 
     return {
       position: { x: node.x + dx * distance, y: node.y + dy * distance, z: node.z + dz * distance },
       lookAt: { x: node.x + rx * shift, y: node.y, z: node.z + rz * shift },
     };
-  }, [neighborhoodReach]);
+  }, [neighborhoodReach, planQuestionStars]);
 
   // Zoom su una stella.
   const flyToNode = useCallback((node: GraphNode) => {
@@ -896,6 +948,90 @@ export default function App() {
     }
   }, [asking, traveling, nodes, selectedId, closeDetail, travelTo, selectTag, searchMatches, startDrift, stopDrift]);
 
+  // Il visitatore sceglie la domanda di una stella vicina: la nebulosa lo
+  // porta li' e la stella risponde proprio a quella domanda (la risposta si
+  // prepara durante il viaggio).
+  const followQuestion = useCallback((question: StarQuestion) => {
+    const node = nodeById.get(question.tag);
+    if (!node || asking || traveling) return;
+    setPanelHoverId(null);
+    setVisitorQuestion(question.text);
+    closeDetail(false);
+    loadOracleText(question.tag, question.text);
+    travelTo(node, [], () => selectTag(question.tag, false));
+  }, [nodeById, asking, traveling, closeDetail, loadOracleText, travelTo, selectTag]);
+
+  // Ogni volta che una stella si apre, le sue vicine scrivono una domanda
+  // nuova (vedi STAR_QUESTIONS), che compare appena e' pronta. La domanda
+  // che ha portato fin qui fa da filo: le nuove ne sono il passo successivo.
+  useEffect(() => {
+    setStarQuestions([]);
+    if (!selectedId || traveling) return;
+    const planned = questionStarsRef.current;
+    const tags = planned?.id === selectedId ? planned.tags : planQuestionStars(selectedId);
+    let current = true;
+    for (const tag of tags) {
+      fetchStarQuestion(tag, visitorQuestion)
+        .then((text) => {
+          if (current) setStarQuestions((shown) => [...shown.filter((q) => q.tag !== tag), { tag, text }]);
+        })
+        .catch(() => {
+          // Senza Oracolo la stella resta senza domanda: si apre con un click.
+        });
+    }
+    return () => { current = false; };
+  }, [selectedId, traveling, visitorQuestion, planQuestionStars]);
+
+  // Le domande seguono le loro stelle sullo schermo: ognuna sta dal lato
+  // opposto alla stella aperta (o dall'altro, se finirebbe sotto la scheda o
+  // fuori dallo schermo) e scende un poco se coprirebbe un'altra domanda.
+  useEffect(() => {
+    if (!selectedId || starQuestions.length === 0) return;
+    let frame = 0;
+    const place = () => {
+      const fg = graphRef.current;
+      const center = nodeById.get(selectedId);
+      if (fg && center?.x != null && center.y != null && center.z != null) {
+        const m = fg.camera().matrixWorldInverse.elements;
+        const middle = fg.graph2ScreenCoords(center.x, center.y, center.z);
+        const width = window.innerWidth;
+        const edge = width >= PANEL_MIN_VIEWPORT ? width - PANEL_SPACE : width;
+        const items = starQuestions
+          .map((q) => ({ node: nodeById.get(q.tag), label: questionLabels.current.get(q.tag) }))
+          .filter((item): item is { node: GraphNode; label: HTMLButtonElement } => !!item.node && !!item.label)
+          .map((item) => {
+            const { x = 0, y = 0, z = 0 } = item.node;
+            const ahead = -(m[2] * x + m[6] * y + m[10] * z + m[14]);
+            return { ...item, ahead, at: fg.graph2ScreenCoords(x, y, z) };
+          })
+          .sort((a, b) => a.at.y - b.at.y);
+        const taken: { left: number; right: number; top: number; bottom: number }[] = [];
+        for (const { label, ahead, at } of items) {
+          if (ahead <= 1) {
+            label.style.visibility = 'hidden';
+            continue;
+          }
+          const w = label.offsetWidth;
+          const h = label.offsetHeight;
+          let toRight = at.x >= middle.x;
+          if (toRight && at.x + QUESTION_GAP + w > edge - 8) toRight = false;
+          if (!toRight && at.x - QUESTION_GAP - w < 8) toRight = true;
+          const left = toRight ? at.x + QUESTION_GAP : at.x - QUESTION_GAP - w;
+          let top = at.y - h / 2;
+          for (const box of taken) {
+            if (left < box.right && left + w > box.left && top < box.bottom && top + h > box.top) top = box.bottom + 4;
+          }
+          taken.push({ left, right: left + w, top, bottom: top + h });
+          label.style.visibility = '';
+          label.style.transform = `translate(${left}px, ${top}px)`;
+        }
+      }
+      frame = requestAnimationFrame(place);
+    };
+    frame = requestAnimationFrame(place);
+    return () => cancelAnimationFrame(frame);
+  }, [selectedId, starQuestions, nodeById]);
+
   // Dopo aver letto la risposta: un'altra domanda...
   const askAnother = useCallback(() => {
     setVisitorQuestion(null);
@@ -932,7 +1068,10 @@ export default function App() {
   };
 
   const handleNodeClick = (node: GraphNode) => {
-    selectTag(node.id);
+    // Una stella vicina che mostra la sua domanda: sceglierla e' fare quella domanda.
+    const question = starQuestions.find((q) => q.tag === node.id);
+    if (question) followQuestion(question);
+    else selectTag(node.id);
   };
 
   // Tasti: Esc chiude la scheda e scioglie la figura; i tasti di SHAPE_KEYS
@@ -1090,6 +1229,29 @@ export default function App() {
           showNavInfo={false}
         />
         <div ref={glowRef} className="star-glow" aria-hidden="true" />
+        {starQuestions.length > 0 && (
+          <div className="star-questions" aria-label="Domande delle stelle vicine">
+            {starQuestions.map((question) => (
+              <button
+                key={question.tag}
+                type="button"
+                className="star-question"
+                ref={(label) => {
+                  if (label) questionLabels.current.set(question.tag, label);
+                  else questionLabels.current.delete(question.tag);
+                }}
+                style={{ visibility: 'hidden' }}
+                onClick={() => followQuestion(question)}
+                onMouseEnter={() => setPanelHoverId(question.tag)}
+                onMouseLeave={() => setPanelHoverId(null)}
+                onFocus={() => setPanelHoverId(question.tag)}
+                onBlur={() => setPanelHoverId(null)}
+              >
+                {question.text}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <header className="topbar">

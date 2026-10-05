@@ -86,6 +86,9 @@ export default function TagDetailPanel({
   // L'Oracolo parla solo della stella mostrata (la scheda puo' essere ancora
   // quella precedente mentre la nuova si carica).
   const voice = oracle && oracle.tag === tag.name && !oracle.silent ? oracle : null;
+  // La domanda a cui la stella risponde la rappresenta: diventa il titolo, e
+  // il tag resta come piccola etichetta.
+  const asked = oracle && oracle.tag === tag.name ? oracle.question : null;
 
   const hover = (name: string) => ({
     onMouseEnter: () => onHoverTag?.(name),
@@ -120,8 +123,8 @@ export default function TagDetailPanel({
           </nav>
         )}
 
-        <div className="detail-kind"><Hash size={15} /> Tag</div>
-        <h2 className="detail-title">{tag.name}</h2>
+        <div className="detail-kind"><Hash size={15} /> {asked ? tag.name : 'Tag'}</div>
+        <h2 className={`detail-title${asked ? ' is-question' : ''}`}>{asked ?? tag.name}</h2>
         <div className="detail-meta">
           <div><span>Frammenti</span><strong>{tag.count}</strong></div>
           <div><span>Stelle collegate</span><strong>{linkedCount ?? tag.related.length}</strong></div>
@@ -130,12 +133,6 @@ export default function TagDetailPanel({
         {voice && (
           <section className="detail-oracle" aria-label="L'Oracolo">
             <p className="detail-oracle-heading"><Sparkles size={12} /> L'Oracolo</p>
-            {voice.question && (
-              <>
-                <p className="detail-oracle-label">Hai chiesto</p>
-                <p className="detail-oracle-question">{voice.question}</p>
-              </>
-            )}
             {voice.text ? (
               <OracleText key={voice.text} text={voice.text} />
             ) : (

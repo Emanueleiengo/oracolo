@@ -116,6 +116,16 @@ h1 span { color: #dbab72; margin: 0 3px; }
 .detail-card { width: min(420px, calc(100vw - 32px)); }
 .detail-kind { display: flex; align-items: center; gap: 7px; font: 9px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .1em; color: #b3865f; margin-bottom: 14px; }
 .detail-title { font-size: 24px; line-height: 1.15; letter-spacing: -.03em; font-weight: 500; color: #e7dfd3; margin: 0 0 6px; }
+/* Quando la stella risponde a una domanda, il titolo e' la domanda e il tag
+   resta come piccola etichetta sopra. */
+.detail-title.is-question { font: italic 500 21px/1.3 'Playfair Display', serif; letter-spacing: 0; color: #f0e3cf; margin-bottom: 12px; }
+
+/* Domande delle stelle vicine: seguono la loro stella sullo schermo. */
+.star-questions { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.star-question { position: absolute; left: 0; top: 0; max-width: 230px; padding: 7px 12px; border-radius: 14px; border: 1px solid rgba(217,174,125,.35); background: rgba(17,19,21,.62); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); color: #f0e3cf; font: italic 500 13px/1.3 'Playfair Display', serif; text-align: left; cursor: pointer; pointer-events: auto; will-change: transform; animation: questionAppear .9s ease both; transition: background .2s, border-color .2s, color .2s; }
+.star-question:hover, .star-question:focus-visible { background: rgba(217,174,125,.24); border-color: rgba(255,213,138,.75); color: #fff; outline: none; }
+@keyframes questionAppear { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .star-question { animation: none; } }
 .detail-author { color: #9c9287; font-size: 12px; margin: 0 0 16px; font-style: italic; }
 .detail-description { color: #b0a89f; font-size: 12px; line-height: 1.7; margin: 0 0 18px; }
 .detail-link { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border: 1px solid rgba(217,174,125,.4); border-radius: 3px; color: #d5a570; font-size: 10px; text-decoration: none; text-transform: uppercase; letter-spacing: .08em; transition: background .2s, color .2s; }
@@ -212,11 +222,10 @@ button.detail-trail-step:hover { background: rgba(95,224,255,.2); border-color: 
 .detail-dock .detail-entry.is-quote { border-left-color: rgba(255,213,138,.85); font-style: italic; }
 .detail-bond .detail-source { padding-left: 13px; margin-top: 0; }
 
-/* L'Oracolo nella scheda: la domanda (del visitatore o sua) e la risposta. */
+/* L'Oracolo nella scheda: la risposta (la domanda e' il titolo della scheda). */
 .detail-oracle { margin-top: 20px; padding: 16px 16px 14px; border: 1px solid rgba(255,213,138,.3); border-radius: 10px; background: linear-gradient(150deg, rgba(255,213,138,.1), rgba(255,213,138,.02) 60%); }
 .detail-oracle-heading { display: flex; align-items: center; gap: 6px; font: 8px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .14em; color: #e1b47f; margin: 0 0 12px; }
 .detail-oracle-label { font: 8px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .1em; color: #a39b93; margin: 0 0 5px; }
-.detail-oracle-question { font: 500 13px/1.5 'Manrope', sans-serif; color: #d6cec4; margin: 0 0 13px; padding-bottom: 13px; border-bottom: 1px solid rgba(255,213,138,.22); }
 .detail-oracle-answer { font: italic 500 19px/1.4 'Playfair Display', serif; color: #ffd58a; margin: 0; }
 /* Le parole compaiono una alla volta (vedi OracleText). */
 .detail-oracle-answer span { opacity: 0; transition: opacity .7s ease; }

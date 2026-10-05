@@ -125,6 +125,17 @@ export async function fetchSuggestions(): Promise<string[]> {
   return (await res.json()).questions;
 }
 
+// Una domanda che rappresenta la stella `tag`, scritta di nuovo a ogni
+// richiesta. `asked` e' la domanda che ha portato il visitatore dove si
+// trova: la nuova ne e' il passo successivo.
+export async function fetchStarQuestion(tag: string, asked: string | null): Promise<string> {
+  const query = new URLSearchParams({ tag });
+  if (asked) query.set('asked', asked);
+  const res = await fetch(`${API_BASE}api/oracle/star-question?${query}`);
+  if (!res.ok) throw await oracleError(res);
+  return (await res.json()).question;
+}
+
 // Testo oracolare della stella `tag`: la risposta a `question` vista da quella
 // stella oppure, senza domanda, una sentenza sul suo tema.
 export async function fetchOracleAnswer(question: string | null, tag: string): Promise<OracleAnswer> {

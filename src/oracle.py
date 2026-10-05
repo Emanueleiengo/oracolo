@@ -9,6 +9,8 @@
   suo tema.
 - `question_for_tag`: una domanda che l'Oracolo fa al visitatore fermo su
   una stella.
+- `star_question`: una domanda che rappresenta una stella, da mostrarle
+  accanto: chi la sceglie viaggia fin li' e la stella gli risponde.
 
 Per rispondere l'Oracolo consulta anche i testi che ha letto (library.py):
 i passi piu' vicini alla domanda entrano nella sua materia, e le frasi che
@@ -22,6 +24,7 @@ import math
 import random
 import re
 import time
+import unicodedata
 from collections import Counter, defaultdict
 
 import requests
@@ -141,6 +144,31 @@ Esempi del tono, su altri temi (non copiarli):
 Scrivi solo la domanda."""
 
 FALLBACK_QUESTION = "Che cosa ti ha portato fin qui?"
+
+# Domanda che rappresenta una stella: chi visita la vede accanto alla stella
+# e, scegliendola, viaggia fin li' e la stella gli risponde. Viene scritta di
+# nuovo a ogni visita, quindi una stella non ha mai le stesse domande.
+STAR_QUESTION_PROMPT = """Molte persone hanno lasciato un pensiero anonimo in una nebulosa custodita da un Oracolo. \
+Ogni stella della nebulosa custodisce un tema.
+
+{asked}La stella del tema "{tag}" raccoglie pensieri come questi:
+{thoughts}
+
+Scrivi UNA {new}domanda che {who} potrebbe rivolgere all'Oracolo sulla propria vita, e a cui la stella \
+"{tag}" saprebbe rispondere{step}. Regole:
+- in italiano, in prima persona, al massimo 9 parole, una sola frase che finisce con il punto di domanda;
+- semplice e diretta, come quelle che ci si fa di notte;
+- deve far sentire il tema senza usare la parola "{tag}";
+- niente nomi propri, niente domande sull'Oracolo o sulla nebulosa.
+
+Esempi del tono, su altri temi (non copiarli):
+- Tornerò mai a casa?
+- Perché ho paura di restare solo?
+- Chi mi aspetta alla fine della strada?
+
+Scrivi solo la domanda."""
+STAR_QUESTION_ASKED = 'Chi visita la nebulosa ha appena chiesto all\'Oracolo: "{question}". Ora guarda una stella vicina.\n\n'
+STAR_QUESTION_WORDS = 14
 SILENCE = "L'oracolo resta in silenzio."
 
 # Parole che tradiscono un Oracolo che parla di se' invece che al visitatore.
@@ -430,3 +458,43 @@ def question_for_tag(tag: str, trail: list[str] | None = None) -> str | None:
         log.debug("Domanda scartata (tentativo %d): %r", attempt + 1, question)
     log.warning("Nessuna domanda accettabile per la stella '%s'", tag)
     return FALLBACK_QUESTION
+
+
+def _plain(text: str) -> str:
+    """Minuscolo e senza accenti: "liberta" e "libertà" sono la stessa parola."""
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", text.lower()) if not unicodedata.combining(ch)
+    )
+
+
+def star_question(tag: str, asked: str | None = None) -> str | None:
+    """Una domanda che chi visita potrebbe fare e a cui la stella `tag`
+    saprebbe rispondere. Con `asked` (la domanda che lo ha portato sulla
+    stella dove si trova) la nuova domanda ne e' il passo successivo.
+    None se la stella non esiste."""
+    entries = [e for e in _tagged_entries() if tag in e["tags"]]
+    if not entries:
+        return None
+    sample = random.sample(entries, min(5, len(entries)))
+    prompt = STAR_QUESTION_PROMPT.format(
+        tag=tag,
+        thoughts=_thoughts(sample),
+        asked=STAR_QUESTION_ASKED.format(question=asked) if asked else "",
+        new="nuova " if asked else "",
+        who="questa persona" if asked else "una persona",
+        step=": come un passo successivo del suo cammino, non una ripetizione della domanda di prima"
+        if asked else "",
+    )
+    fallback = None
+    for attempt in range(QUESTION_ATTEMPTS):
+        question = _generate(prompt, 0.9)
+        words = question.split()
+        if not question.endswith("?") or question.count("?") != 1 or len(words) > STAR_QUESTION_WORDS:
+            log.debug("Domanda della stella scartata (tentativo %d): %r", attempt + 1, question)
+            continue
+        if _plain(tag) not in _plain(question):
+            return question
+        fallback = fallback or question  # nomina il tema: va bene se non c'e' di meglio
+    if fallback is None:
+        log.warning("Nessuna domanda accettabile per la stella '%s'", tag)
+    return fallback
