@@ -37,6 +37,12 @@ WIDE_NET = 14
 # Sotto questa similarita' col tema piu' vicino, la citazione parla di
 # qualcosa che la nebulosa non ha ancora: si chiede un tema nuovo.
 NEW_THEME_BELOW = 0.60
+# Una stella non riceve piu' di questa parte delle citazioni (ma almeno
+# QUOTE_CAP_MIN): un tema largo ("filosofia") calza a quasi tutto, e senza
+# un tetto si prenderebbe una citazione su quattro. Raggiunto il tetto, il
+# modello sceglie tra gli altri temi vicini.
+QUOTE_SHARE_CAP = 0.08
+QUOTE_CAP_MIN = 8
 
 PICK_PROMPT = """Una frase sta per entrare in una nebulosa di pensieri, dove ogni tema e' una stella.
 
@@ -86,11 +92,15 @@ class ThemeIndex:
         self._centers: dict[str, array] = {}
         self._uses: dict[str, int] = {}
         self._total = 0
+        self._quote_uses: dict[str, int] = {}
+        self._quotes = 0
         vectors = embeddings.load_entry_vectors()
         for entry in db_local.get_entries_with_tags():
-            if entry["id"] in vectors:
+            if entry["source"] is not None:
+                self.add_quote(entry["tags"])
+            elif entry["id"] in vectors:
                 for tag in entry["tags"]:
-                    self.add(tag, vectors[entry["id"]], quote=entry["source"] is not None)
+                    self.add(tag, vectors[entry["id"]])
 
     def __contains__(self, tag: str) -> bool:
         return tag in self._uses
@@ -98,16 +108,28 @@ class ThemeIndex:
     def names(self) -> list[str]:
         return list(self._uses)
 
-    def add(self, tag: str, vector: array, quote: bool = False) -> None:
-        """Una frase in piu' usa questo tema (che nasce, se non c'era).
-        `quote` vale per le citazioni dei testi."""
+    def _count(self, tag: str) -> None:
         self._uses[tag] = self._uses.get(tag, 0) + 1
         self._total += 1
-        if quote:
-            return
+
+    def add(self, tag: str, vector: array) -> None:
+        """Un pensiero di una persona in piu' usa questo tema (che nasce, se
+        non c'era): il centro del tema si sposta verso di lui."""
+        self._count(tag)
         total = self._sums.get(tag)
         self._sums[tag] = list(vector) if total is None else [a + b for a, b in zip(total, vector)]
         self._centers.pop(tag, None)
+
+    def add_quote(self, tags: list[str]) -> None:
+        """Una citazione in piu' usa questi temi: conta, ma non sposta i centri."""
+        for tag in tags:
+            self._count(tag)
+            self._quote_uses[tag] = self._quote_uses.get(tag, 0) + 1
+        self._quotes += 1
+
+    def full(self, tag: str) -> bool:
+        """Vero se il tema ha gia' la sua parte di citazioni (vedi QUOTE_SHARE_CAP)."""
+        return self._quote_uses.get(tag, 0) >= max(QUOTE_CAP_MIN, QUOTE_SHARE_CAP * self._quotes)
 
     def _specificity(self, tag: str) -> float:
         """Da 0 (tema onnipresente) a 1 (tema raro)."""
@@ -217,15 +239,16 @@ def _new_theme(text: str, vector: array, index: ThemeIndex) -> str | None:
 
 def assign(text: str, vector: array, index: ThemeIndex) -> list[str]:
     """I temi di una citazione; aggiorna l'indice con i temi assegnati."""
-    near = index.nearest(vector, CANDIDATES)
+    ranked = index.nearest(vector, WIDE_NET)
+    # Le stelle che hanno gia' la loro parte di citazioni non si propongono.
+    near = [item for item in ranked if not index.full(item[1])][:CANDIDATES]
     tags = _picked(text, near) if near else []
-    if not near or near[0][0] < NEW_THEME_BELOW:
+    if not ranked or ranked[0][0] < NEW_THEME_BELOW:
         fresh = _new_theme(text, vector, index)
-        if fresh and fresh not in tags:
+        if fresh and fresh not in tags and not index.full(fresh):
             tags.append(fresh)
     if not tags and near:
         tags = [near[0][1]]  # il modello non ha scelto: vale il tema piu' vicino
     tags = tags[: config.MAX_TAGS_PER_ENTRY]
-    for tag in tags:
-        index.add(tag, vector, quote=True)
+    index.add_quote(tags)
     return tags

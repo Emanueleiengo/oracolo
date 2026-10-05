@@ -32,7 +32,7 @@ log = get_logger(__name__)
 MANIFEST_NAME = "fonti.json"
 # Versione del modo in cui i testi vengono letti e taggati: cambiandola, al
 # prossimo `ingest` tutti i testi vengono riletti con il metodo nuovo.
-INGEST_VERSION = 5
+INGEST_VERSION = 6
 EXTENSIONS = {".pdf", ".txt"}
 UNKNOWN_AUTHOR = "Autore sconosciuto"
 
