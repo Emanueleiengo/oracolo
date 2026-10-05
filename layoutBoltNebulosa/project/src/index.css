@@ -237,7 +237,11 @@ button.detail-trail-step:hover { background: rgba(95,224,255,.2); border-color: 
 /* Barra delle domande: invita finche' non la si usa, e mostra l'attesa. */
 .oracle-input-wrap.is-inviting { animation: oracleInvite 2.6s ease-in-out infinite; }
 @keyframes oracleInvite { 0%, 100% { box-shadow: 0 0 0 5px rgba(217,174,125,.03), 0 15px 50px rgba(0,0,0,.35); } 50% { box-shadow: 0 0 0 7px rgba(217,174,125,.12), 0 0 34px rgba(255,213,138,.22), 0 15px 50px rgba(0,0,0,.35); } }
-.oracle-input-wrap.is-asking input { color: transparent; }
+/* Durante l'attesa si legge solo la scritta dell'Oracolo: spariscono sia la
+   domanda scritta sia il testo d'invito (che compare quando la domanda viene
+   da un suggerimento, o e' gia' stata tolta per il viaggio). */
+.oracle-input-wrap.is-asking input,
+.oracle-input-wrap.is-asking input::placeholder { color: transparent; }
 .oracle-asking { position: absolute; left: 58px; right: 20px; font: italic 500 14px 'Playfair Display', serif; color: #e1b47f; pointer-events: none; animation: oracleBreath 1.8s ease-in-out infinite; }
 .search-ask .search-result-label { color: #f0d9b0; font-style: italic; }
 
