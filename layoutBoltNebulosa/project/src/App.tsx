@@ -75,6 +75,9 @@ const FOCUS_VERTICAL_ROOM = 0.72;
 // sinistra del pannello.
 const PANEL_SPACE = 410;
 const PANEL_MIN_VIEWPORT = 760;
+// Aprendo o chiudendo la scheda la camera si sposta per farle spazio (o
+// per riportare la stella al centro) in questo tempo.
+const PANEL_SHIFT_MS = 900;
 
 // Durata del volo delle stelle (e della camera) quando si richiama una figura.
 const MORPH_MS = 2200;
@@ -345,6 +348,9 @@ export default function App() {
   const [detailTag, setDetailTag] = useState<TagDetail | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [panelHoverId, setPanelHoverId] = useState<string | null>(null);
+  // Scheda della stella aperta o chiusa: su ogni nuova stella parte chiusa,
+  // per lasciare spazio alla nebulosa; la apre e la chiude il visitatore.
+  const [panelOpen, setPanelOpen] = useState(false);
   // Viaggio nella nebulosa: le stelle aperte una dopo l'altra, finche' ognuna
   // e' collegata alla precedente. Restano illuminate (anche a scheda chiusa)
   // e il percorso riparte da capo quando si apre una stella non collegata
@@ -708,9 +714,11 @@ export default function App() {
 
   // Inquadratura di una stella aperta: la camera la guarda dalla direzione
   // da cui la si guardava, da lontano quanto basta a vedere anche le stelle
-  // collegate, e la mira e' spostata un po' a destra cosi' che la stella
-  // finisca al centro dello spazio libero a sinistra del pannello.
-  const focusView = useCallback((node: GraphNode) => {
+  // collegate (e le stelle `kept`, che mostrano una domanda: di norma si
+  // scelgono qui). Con la scheda aperta (`panel`) la mira e' spostata un po'
+  // a destra, cosi' che la stella finisca al centro dello spazio libero a
+  // sinistra della scheda.
+  const focusView = useCallback((node: GraphNode, panel = false, kept?: string[]) => {
     const fg = graphRef.current;
     if (!fg || node.x == null || node.y == null || node.z == null) return null;
     const cam = fg.camera();
@@ -728,13 +736,13 @@ export default function App() {
     const rlen = Math.hypot(rx, rz);
     if (rlen < 1e-3) { rx = 1; rz = 0; } else { rx /= rlen; rz /= rlen; }
 
-    const panelOpen = window.innerWidth >= PANEL_MIN_VIEWPORT;
-    const share = panelOpen ? Math.min(0.45, PANEL_SPACE / window.innerWidth) : 0;
+    const beside = panel && window.innerWidth >= PANEL_MIN_VIEWPORT;
+    const share = beside ? Math.min(0.45, PANEL_SPACE / window.innerWidth) : 0;
     const tanHalf = Math.tan((cam.fov * Math.PI) / 360);
     // Mezza apertura utile: in verticale tra intestazione e barra, in
     // orizzontale lo spazio libero accanto al pannello.
     const room = Math.min(tanHalf * FOCUS_VERTICAL_ROOM, tanHalf * cam.aspect * (1 - share));
-    const reach = neighborhoodReach(node, planQuestionStars(node.id));
+    const reach = neighborhoodReach(node, kept ?? planQuestionStars(node.id));
     const distance = Math.max(FOCUS_MIN_DISTANCE, (reach * FOCUS_MARGIN) / room);
     const shift = share * distance * tanHalf * cam.aspect;
 
@@ -766,6 +774,7 @@ export default function App() {
   // Apre un tag: zoom sulla stella (a meno che la camera non ci sia gia'
   // arrivata da sola: `fly` falso), illumina le collegate e carica la scheda.
   const openTag = useCallback(async (id: string, fly = true) => {
+    if (selectionRef.current !== id) setPanelOpen(false);
     selectionRef.current = id;
     setSelectedId(id);
     setSearchResultsVisible(false);
@@ -1345,7 +1354,7 @@ export default function App() {
       cancelAnimationFrame(frame);
       controls?.removeEventListener?.('start', stop);
     };
-  }, [selectedId, traveling, asking, nodeById]);
+  }, [selectedId, traveling, asking, nodeById, panelOpen]);
 
   // Ogni volta che una stella si apre, le sue vicine scrivono una domanda
   // nuova (vedi STAR_QUESTIONS), che compare appena e' pronta. La domanda
@@ -1381,7 +1390,7 @@ export default function App() {
         const m = fg.camera().matrixWorldInverse.elements;
         const middle = fg.graph2ScreenCoords(center.x, center.y, center.z);
         const width = window.innerWidth;
-        const edge = width >= PANEL_MIN_VIEWPORT ? width - PANEL_SPACE : width;
+        const edge = panelOpen && width >= PANEL_MIN_VIEWPORT ? width - PANEL_SPACE : width;
         const items = starQuestions
           .map((q) => ({ node: nodeById.get(q.tag), label: questionLabels.current.get(q.tag) }))
           .filter((item): item is { node: GraphNode; label: HTMLButtonElement } => !!item.node && !!item.label)
@@ -1416,7 +1425,19 @@ export default function App() {
     };
     frame = requestAnimationFrame(place);
     return () => cancelAnimationFrame(frame);
-  }, [selectedId, starQuestions, nodeById]);
+  }, [selectedId, starQuestions, nodeById, panelOpen]);
+
+  // Il visitatore apre o chiude la scheda: la camera fa spazio alla scheda,
+  // o riporta la stella al centro, senza cambiare le domande attorno.
+  const togglePanel = useCallback(() => {
+    const open = !panelOpen;
+    setPanelOpen(open);
+    const node = selectedId ? nodeById.get(selectedId) : undefined;
+    if (!node || traveling) return;
+    const planned = questionStarsRef.current;
+    const view = focusView(node, open, planned?.id === selectedId ? planned.tags : starQuestions.map((q) => q.tag));
+    if (view) graphRef.current?.cameraPosition(view.position, view.lookAt, PANEL_SHIFT_MS);
+  }, [panelOpen, selectedId, nodeById, traveling, focusView, starQuestions]);
 
   // Dopo aver letto la risposta: un'altra domanda...
   const askAnother = useCallback(() => {
@@ -1789,6 +1810,8 @@ export default function App() {
         onWander={wander}
         figureReady={!!figure && figure.steps >= FIGURE_STEPS && !revealing}
         onRevealFigure={revealFigure}
+        open={panelOpen}
+        onToggle={togglePanel}
       />
 
       {showAbout && (

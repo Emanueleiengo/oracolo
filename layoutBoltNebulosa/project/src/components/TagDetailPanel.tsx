@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpRight, Hash, Sparkles, X } from 'lucide-react';
+import { ArrowUpRight, ChevronLeft, ChevronRight, Hash, Sparkles, X } from 'lucide-react';
 import type { OracleReading, OracleThought, TagDetail, TextSource } from '@/lib/api';
 
 // Una domanda della cronologia, con la stella che le ha risposto.
@@ -113,6 +113,9 @@ type Props = {
   // La figura del viaggio e' completa: si puo' guardarla subito.
   figureReady?: boolean;
   onRevealFigure?: () => void;
+  // Scheda aperta o ritirata a destra (resta solo la linguetta per riaprirla).
+  open?: boolean;
+  onToggle?: () => void;
 };
 
 // Scheda del tag, ancorata a destra: a differenza del vecchio modale non ha
@@ -131,6 +134,8 @@ export default function TagDetailPanel({
   onWander,
   figureReady = false,
   onRevealFigure,
+  open = true,
+  onToggle,
 }: Props) {
   if (!tag) return null;
 
@@ -154,7 +159,18 @@ export default function TagDetailPanel({
   });
 
   return (
-    <aside className="detail-dock" aria-label={`Tag ${tag.name}`}>
+    <aside className={`detail-dock${open ? '' : ' is-closed'}`} aria-label={`Tag ${tag.name}`}>
+      {/* Linguetta: apre e chiude la scheda. Il puntino dice che la stella
+          ha parlato e la risposta aspetta di essere letta. */}
+      <button
+        className={`detail-handle${!open && voice?.text && !arriving ? ' has-news' : ''}`}
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-label={open ? 'Nascondi la scheda' : 'Apri la risposta della stella'}
+      >
+        {open ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
+        <span>{open ? 'nascondi' : 'la risposta'}</span>
+      </button>
       <button className="modal-close" onClick={onClose} aria-label="Chiudi"><X size={18} /></button>
       <div className="detail-dock-scroll" key={tag.name}>
         {history.length > 1 && (
