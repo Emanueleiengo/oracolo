@@ -139,14 +139,11 @@ const TRAVEL_MS_PER_UNIT = 2.6;
 const TRAVEL_MIN_MS = 1500;
 const TRAVEL_MAX_MS = 5000;
 const TRAVEL_PASS_DISTANCE = 200;
-// Da una stella a un'altra la camera non scivola di lato: a meta' strada
-// scende verso le due stelle (di questa parte della distanza) e poi risale
-// sull'inquadratura d'arrivo, cosi' le stelle intorno le scorrono accanto.
-const HOP_DIVE = 0.45;
 // In sosta su una stella la camera le gira attorno piano (radianti al
-// secondo), cominciando dopo ORBIT_DELAY_MS e prendendo velocita' in
-// ORBIT_RAMP_MS.
-const ORBIT_SPEED = 0.045;
+// secondo: un giro ogni quasi 9 minuti), cominciando dopo ORBIT_DELAY_MS e
+// prendendo velocita' in ORBIT_RAMP_MS. Si ferma mentre il mouse e' su una
+// domanda, cosi' la si legge e la si sceglie senza inseguirla.
+const ORBIT_SPEED = 0.012;
 const ORBIT_DELAY_MS = 1500;
 const ORBIT_RAMP_MS = 2500;
 // Mentre l'Oracolo cerca, la nebulosa attira a se': la camera avanza
@@ -357,6 +354,8 @@ export default function App() {
   const questionLabels = useRef(new Map<string, HTMLButtonElement>());
   // Il viaggio, leggibile quando si scelgono le stelle vicine.
   const trailRef = useRef<string[]>([]);
+  // Vero mentre il mouse e' su una domanda: la camera smette di girare.
+  const orbitPaused = useRef(false);
 
   // ── Load the tag graph from Oracolo ──
   const loadGraph = useCallback(async () => {
@@ -894,40 +893,54 @@ export default function App() {
         points.push(point);
       }
     }
-    if (from && points.length === 1 && from.x != null && from.y != null && from.z != null) {
-      // Salto tra stelle: a meta' strada la camera scende verso di loro (HOP_DIVE).
-      const start = points[0];
-      points.push([0, 1, 2].map((axis) => {
-        const camera = (start[axis] + arrival[axis]) / 2;
-        const stars = ([from.x, from.y, from.z][axis]! + star[axis]) / 2;
-        return camera + (stars - camera) * HOP_DIVE;
-      }) as Vec3);
-    }
     points.push(arrival);
-    const path = evenPath(points);
-    const duration = Math.min(TRAVEL_MAX_MS, Math.max(TRAVEL_MIN_MS, TRAVEL_BASE_MS + path.length * TRAVEL_MS_PER_UNIT));
 
     const aim = (fg.controls() as { target?: { x: number; y: number; z: number } } | undefined)?.target;
     const lookFrom: Vec3 = aim ? [aim.x, aim.y, aim.z] : [0, 0, 0];
     const to: Vec3 = [end.lookAt.x, end.lookAt.y, end.lookAt.z];
+    const mix = (a: Vec3, b: Vec3, k: number): Vec3 => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+
+    // Dove stanno camera e sguardo a frazione `e` del viaggio, e quanta strada si fa.
+    let place: (e: number) => { camera: Vec3; look: Vec3 };
+    let length: number;
+    if (from && points.length === 2) {
+      // Salto tra stelle: la camera accompagna lo sguardo da una stella
+      // all'altra restando alla stessa distanza (cambia solo quanto serve per
+      // la nuova inquadratura), senza avvicinarsi e riallontanarsi.
+      const startOffset: Vec3 = [cam.x - lookFrom[0], cam.y - lookFrom[1], cam.z - lookFrom[2]];
+      const endOffset: Vec3 = [arrival[0] - to[0], arrival[1] - to[1], arrival[2] - to[2]];
+      const startLen = Math.hypot(...startOffset) || 1;
+      const endLen = Math.hypot(...endOffset) || 1;
+      const startDir = startOffset.map((v) => v / startLen) as Vec3;
+      const endDir = endOffset.map((v) => v / endLen) as Vec3;
+      length = gap(lookFrom, to);
+      place = (e) => {
+        const look = mix(lookFrom, to, e);
+        const dir = mix(startDir, endDir, e);
+        const scale = (startLen + (endLen - startLen) * e) / (Math.hypot(...dir) || 1);
+        return { camera: [look[0] + dir[0] * scale, look[1] + dir[1] * scale, look[2] + dir[2] * scale], look };
+      };
+    } else {
+      const path = evenPath(points);
+      length = path.length;
+      place = (e) => {
+        // Lo sguardo si volta verso la stella di arrivo gia' nella prima
+        // parte del viaggio, cosi' la si vede avvicinarsi.
+        const turn = Math.min(1, e * 1.7);
+        return { camera: path.at(e), look: mix(lookFrom, to, turn * turn * (3 - 2 * turn)) };
+      };
+    }
+    const duration = Math.min(TRAVEL_MAX_MS, Math.max(TRAVEL_MIN_MS, TRAVEL_BASE_MS + length * TRAVEL_MS_PER_UNIT));
+
     const start = performance.now();
     setTraveling(true);
     cancelAnimationFrame(travelFrame.current);
     const step = (now: number) => {
       const t = Math.min(1, (now - start) / duration);
-      const eased = smoother(t);
-      const [x, y, z] = path.at(eased);
-      // Lo sguardo si volta verso la stella di arrivo gia' nella prima parte
-      // del viaggio, cosi' la si vede avvicinarsi.
-      const turn = Math.min(1, eased * 1.7);
-      const k = turn * turn * (3 - 2 * turn);
+      const { camera, look } = place(smoother(t));
       fg.cameraPosition(
-        { x, y, z },
-        {
-          x: lookFrom[0] + (to[0] - lookFrom[0]) * k,
-          y: lookFrom[1] + (to[1] - lookFrom[1]) * k,
-          z: lookFrom[2] + (to[2] - lookFrom[2]) * k,
-        },
+        { x: camera[0], y: camera[1], z: camera[2] },
+        { x: look[0], y: look[1], z: look[2] },
         0
       );
       if (t < 1) {
@@ -1034,7 +1047,7 @@ export default function App() {
       if (!begun) begun = last = now;
       const since = now - begun - ORBIT_DELAY_MS;
       const aim = controls?.target;
-      if (since > 0 && aim && node.x != null && node.z != null) {
+      if (since > 0 && aim && !orbitPaused.current && node.x != null && node.z != null) {
         const angle = (ORBIT_SPEED * Math.min(1, since / ORBIT_RAMP_MS) * (now - last)) / 1000;
         const cos = Math.cos(angle);
         const sin = Math.sin(angle);
@@ -1338,11 +1351,26 @@ export default function App() {
                   else questionLabels.current.delete(question.tag);
                 }}
                 style={{ visibility: 'hidden' }}
-                onClick={() => followQuestion(question)}
-                onMouseEnter={() => setPanelHoverId(question.tag)}
-                onMouseLeave={() => setPanelHoverId(null)}
-                onFocus={() => setPanelHoverId(question.tag)}
-                onBlur={() => setPanelHoverId(null)}
+                onClick={() => {
+                  orbitPaused.current = false;
+                  followQuestion(question);
+                }}
+                onMouseEnter={() => {
+                  orbitPaused.current = true;
+                  setPanelHoverId(question.tag);
+                }}
+                onMouseLeave={() => {
+                  orbitPaused.current = false;
+                  setPanelHoverId(null);
+                }}
+                onFocus={() => {
+                  orbitPaused.current = true;
+                  setPanelHoverId(question.tag);
+                }}
+                onBlur={() => {
+                  orbitPaused.current = false;
+                  setPanelHoverId(null);
+                }}
               >
                 {question.text}
               </button>
